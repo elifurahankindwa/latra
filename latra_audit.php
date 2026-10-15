@@ -87,7 +87,7 @@ function laPager(int $total, int $page, int $perPage, string $param): string {
     if ($totalPages <= 1) return '';
     $q = $_GET;
     foreach (['page', 'dpage', 'gpage', 'epage', 'mpage', 'ppage', 'apage', 'lpage'] as $k) unset($q[$k]);
-    $u = fn (array $extra) => 'latra_audit.php?' . http_build_query(array_merge($q, $extra));
+    $u = fn (array $extra) => 'latra_audit?' . http_build_query(array_merge($q, $extra));
     $html = '<div class="pagination">';
     if ($page > 1) $html .= '<a href="' . esc($u([$param => $page - 1])) . '" class="page-link"><i data-lucide="chevron-left"></i></a>';
     $start = max(1, $page - 2);
@@ -621,7 +621,7 @@ Layout::renderHead($pageTitle, $tab === 'live');
 
 <div class="feed-tabs la-tabs">
     <?php foreach ($tabOrder as $t): if (!Auth::hasPermission($tabPerms[$t])) continue; ?>
-        <a class="feed-tab<?= $tab === $t ? ' active' : '' ?>" href="latra_audit.php?tab=<?= $t ?>"><i data-lucide="<?= Icon::fixStripped($tabIcons[$t]) ?>"></i> <?= $tabLabels[$t] ?></a>
+        <a class="feed-tab<?= $tab === $t ? ' active' : '' ?>" href="latra_audit?tab=<?= $t ?>"><i data-lucide="<?= Icon::fixStripped($tabIcons[$t]) ?>"></i> <?= $tabLabels[$t] ?></a>
     <?php endforeach; ?>
 </div>
 
@@ -716,7 +716,7 @@ Layout::renderHead($pageTitle, $tab === 'live');
             <?php endforeach; ?>
         </select>
         <button type="submit" class="btn btn-primary"><i data-lucide="filter"></i> Apply</button>
-        <a href="latra_audit.php?tab=live" class="btn btn-secondary"><i data-lucide="rotate-cw"></i> Reset</a>
+        <a href="latra_audit?tab=live" class="btn btn-secondary"><i data-lucide="rotate-cw"></i> Reset</a>
         <button type="button" class="btn btn-secondary" onclick="location.reload()" title="Refresh now"><i data-lucide="rotate-cw"></i></button>
         <label class="live-autorefresh" style="display:inline-flex;align-items:center;gap:6px;margin-left:8px;">
             <input type="checkbox" id="liveAutoRef"> <strong>Auto-refresh 30s</strong>
@@ -781,7 +781,7 @@ Layout::renderHead($pageTitle, $tab === 'live');
                             <?php endif; ?>
                         </td>
                         <td class="v-cell">
-                            <a href="vehicle_detail.php?id=<?= (int) $v['id'] ?>"><?= esc($v['vehicle_reg_no']) ?></a>
+                            <a href="vehicle_detail?id=<?= (int) $v['id'] ?>"><?= esc($v['vehicle_reg_no']) ?></a>
                             <br><small class="text-muted"><?= esc($v['name'] ?? '') ?></small>
                         </td>
                         <td>
@@ -843,7 +843,7 @@ Layout::renderHead($pageTitle, $tab === 'live');
             <?php endforeach; ?>
         </select>
         <button type="submit" class="btn btn-primary"><i data-lucide="filter"></i> Apply</button>
-        <a href="latra_audit.php?tab=devices" class="btn btn-secondary"><i data-lucide="rotate-cw"></i> Reset</a>
+        <a href="latra_audit?tab=devices" class="btn btn-secondary"><i data-lucide="rotate-cw"></i> Reset</a>
     </form>
 </div>
 
@@ -855,7 +855,7 @@ Layout::renderHead($pageTitle, $tab === 'live');
         <thead><tr><th>Vehicle</th><th>Device</th><th>Status</th><th>Battery</th><th>Power</th><th>Tamper</th><th>Last comm</th><th>Speed limit</th><th>Actions</th></tr></thead><tbody>
         <?php foreach ($devices as $d): $vid = (int) $d['id']; ?>
             <tr>
-                <td><a href="vehicle_detail.php?id=<?= $vid ?>"><?= esc($d['vehicle_reg_no']) ?></a><br><small class="text-muted"><?= esc($d['name'] ?? '') ?></small></td>
+                <td><a href="vehicle_detail?id=<?= $vid ?>"><?= esc($d['vehicle_reg_no']) ?></a><br><small class="text-muted"><?= esc($d['name'] ?? '') ?></small></td>
                 <td><span class="text-muted"><?= esc($d['imei'] ?? '-') ?></span><br><small><?= esc($d['hw_type'] ?? '') ?></small></td>
                 <td><?php if ($d['is_online'] !== null): echo laBadge($d['is_online'] ? 'online' : 'offline', 'wifi'); else: echo laBadge('unknown', 'question'); endif; ?></td>
                 <td>
@@ -872,7 +872,7 @@ Layout::renderHead($pageTitle, $tab === 'live');
                 <td class="text-muted"><?= esc($d['last_comm_at'] ?? '-') ?></td>
                 <td><?= $d['speed_limit_kmh'] !== null ? round((float) $d['speed_limit_kmh'], 1) . ' km/h' : esc((string) round($defaultSpeed, 1)) . ' km/h (default)' ?></td>
                 <td>
-                    <a href="vehicle_detail.php?id=<?= $vid ?>" class="btn btn-sm btn-secondary" title="View detail &amp; history"><i data-lucide="eye"></i> View</a>
+                    <a href="vehicle_detail?id=<?= $vid ?>" class="btn btn-sm btn-secondary" title="View detail &amp; history"><i data-lucide="eye"></i> View</a>
                     <?php if (Auth::hasPermission('device.interrogate')): ?>
                         <button type="button" class="btn btn-sm btn-primary" onclick="interrogateDevice(<?= $vid ?>, '<?= esc($d['vehicle_reg_no']) ?>')" title="Read latest stored device state (audited)"><i data-lucide="satellite-dish"></i> Interrogate</button>
                     <?php endif; ?>
@@ -1028,7 +1028,7 @@ function showDeviceParams(btn) {
         <input type="date" name="gfrom" class="form-input" title="From" value="<?= esc($_GET['gfrom'] ?? '') ?>">
         <input type="date" name="gto" class="form-input" title="To" value="<?= esc($_GET['gto'] ?? '') ?>">
         <button type="submit" class="btn btn-primary"><i data-lucide="filter"></i> Apply</button>
-        <a href="latra_audit.php?tab=gps" class="btn btn-secondary"><i data-lucide="rotate-cw"></i> Reset</a>
+        <a href="latra_audit?tab=gps" class="btn btn-secondary"><i data-lucide="rotate-cw"></i> Reset</a>
     </form>
 </div>
 
@@ -1142,7 +1142,7 @@ function showDeviceParams(btn) {
                 <?php endforeach; ?>
             </select>
             <button type="submit" class="btn btn-primary"><i data-lucide="filter"></i> Apply</button>
-            <a href="latra_audit.php?tab=integration" class="btn btn-secondary"><i data-lucide="rotate-cw"></i> Reset</a>
+            <a href="latra_audit?tab=integration" class="btn btn-secondary"><i data-lucide="rotate-cw"></i> Reset</a>
         </form>
     </div>
     <div class="table-responsive"><table class="data-table">
@@ -1193,7 +1193,7 @@ function showDeviceParams(btn) {
         <input type="date" name="afrom" class="form-input" title="From" value="<?= esc($_GET['afrom'] ?? '') ?>">
         <input type="date" name="ato" class="form-input" title="To" value="<?= esc($_GET['ato'] ?? '') ?>">
         <button type="submit" class="btn btn-primary"><i data-lucide="filter"></i> Apply</button>
-        <a href="latra_audit.php?tab=audit" class="btn btn-secondary"><i data-lucide="rotate-cw"></i> Reset</a>
+        <a href="latra_audit?tab=audit" class="btn btn-secondary"><i data-lucide="rotate-cw"></i> Reset</a>
     </form>
 </div>
 
@@ -1238,8 +1238,8 @@ function showDeviceParams(btn) {
             <input type="date" name="to" class="form-input" title="To" value="<?= esc($_GET['to'] ?? '') ?>">
         <?php endif; ?>
         <button type="submit" class="btn btn-primary"><i data-lucide="eye"></i> Preview</button>
-        <button type="button" class="btn btn-success" onclick="window.location='latra_audit.php?tab=reports&export=csv&report=<?= esc($report) ?>&from=<?= esc($_GET['from'] ?? '') ?>&to=<?= esc($_GET['to'] ?? '') ?>'"><i data-lucide="file-spreadsheet"></i> Export CSV</button>
-        <a href="latra_audit.php?tab=reports" class="btn btn-secondary"><i data-lucide="rotate-cw"></i> Reset</a>
+        <button type="button" class="btn btn-success" onclick="window.location='latra_audit?tab=reports&export=csv&report=<?= esc($report) ?>&from=<?= esc($_GET['from'] ?? '') ?>&to=<?= esc($_GET['to'] ?? '') ?>'"><i data-lucide="file-spreadsheet"></i> Export CSV</button>
+        <a href="latra_audit?tab=reports" class="btn btn-secondary"><i data-lucide="rotate-cw"></i> Reset</a>
     </form>
 </div>
 

@@ -14,21 +14,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($_POST['run_bucket'])) {
         $bucketId = (int) $_POST['run_bucket'];
         Database::query('UPDATE automation_buckets SET run_on_demand = 1, next_run_at = NOW() WHERE id = ?', [$bucketId]);
-        header('Location: automation.php?queued=1'); exit;
+        header('Location: automation?queued=1'); exit;
     }
     if (isset($_POST['delete_bucket'])) {
         Database::delete('automation_buckets', 'id = ?', [(int) $_POST['delete_bucket']]);
-        header('Location: automation.php?deleted=1'); exit;
+        header('Location: automation?deleted=1'); exit;
     }
     if (isset($_POST['toggle_bucket'])) {
         $bucket = Database::fetch("SELECT is_event, is_enabled FROM automation_buckets WHERE id = ?", [(int) $_POST['toggle_bucket']]);
         $engineOn = Schema::config('event_engine_enabled', '1') === '1' && Schema::config('scheduler_enabled', '1') === '1';
         if ($bucket && (int) $bucket['is_event'] === 1 && $engineOn && (int) $bucket['is_enabled'] === 0) {
             // Event buckets can't be enabled while the engine owns events.
-            header('Location: automation.php?engine_owns_events=1'); exit;
+            header('Location: automation?engine_owns_events=1'); exit;
         }
         Database::query('UPDATE automation_buckets SET is_enabled = NOT is_enabled WHERE id = ?', [(int) $_POST['toggle_bucket']]);
-        header('Location: automation.php'); exit;
+        header('Location: automation'); exit;
     }
     if (isset($_POST['master_toggle'])) {
         $enable = $_POST['master_toggle'] === 'enable';
@@ -47,7 +47,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             );
         }
         Database::query('UPDATE jobs SET is_enabled = ?', [$enable ? 1 : 0]);
-        header('Location: automation.php?master=' . ($enable ? 'on' : 'off')); exit;
+        header('Location: automation?master=' . ($enable ? 'on' : 'off')); exit;
     }
     if (isset($_POST['event_engine_toggle'])) {
         $val = $_POST['event_engine_toggle'] === 'enable' ? 1 : 0;
@@ -61,13 +61,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // Mutual exclusion: when the engine owns events, disable all event buckets.
             Database::query('UPDATE automation_buckets SET is_enabled = 0 WHERE is_event = 1');
         }
-        header('Location: automation.php?engine=' . ($val ? 'on' : 'off')); exit;
+        header('Location: automation?engine=' . ($val ? 'on' : 'off')); exit;
     }
     $activityId = (int) ($_POST['activity_id'] ?? 0);
     $vehicleIds = array_values(array_filter(array_map('intval', $_POST['vehicle_ids'] ?? [])));
     $bucketId = (int) ($_POST['bucket_id'] ?? 0);
     if ($activityId < 1 || $activityId > 24 || !$vehicleIds || trim($_POST['bucket_name'] ?? '') === '') {
-        header('Location: automation.php?error=Provide a name, one activity, and at least one vehicle'); exit;
+        header('Location: automation?error=Provide a name, one activity, and at least one vehicle'); exit;
     }
     $data = ['bucket_name' => trim($_POST['bucket_name']), 'activity_id' => $activityId, 'interval_seconds' => 180, 'cooldown_seconds' => 0];
     if ($bucketId) {
@@ -80,9 +80,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $bucketId = Database::insert('automation_buckets', $data);
     }
     foreach ($vehicleIds as $vehicleId) Database::insert('bucket_vehicles', ['bucket_id' => $bucketId, 'vehicle_id' => $vehicleId]);
-    header('Location: automation.php?saved=1'); exit;
+    header('Location: automation?saved=1'); exit;
 }
-if (isset($_GET['delete']) || isset($_GET['toggle'])) { header('Location: automation.php'); exit; }
+if (isset($_GET['delete']) || isset($_GET['toggle'])) { header('Location: automation'); exit; }
 
 $buckets = Database::fetchAll("SELECT ab.*, ad.activity_name, (SELECT COUNT(*) FROM bucket_vehicles bv WHERE bv.bucket_id = ab.id) vehicle_count, (SELECT COUNT(*) FROM automation_runs r WHERE r.bucket_id = ab.id) run_count FROM automation_buckets ab JOIN activity_definitions ad ON ad.id = ab.activity_id ORDER BY ab.created_at DESC");
 $vehicles = Database::fetchAll('SELECT id, vehicle_reg_no FROM vehicles WHERE is_active = 1 ORDER BY vehicle_reg_no');
@@ -369,7 +369,7 @@ Layout::renderHead('Automation Buckets');
 
                 <div class="form-row">
                     <button class="btn btn-primary w-100" type="submit"><i data-lucide="save"></i> <?= $editBucket ? 'Save Changes' : 'Create Bucket' ?></button>
-                    <?php if ($editBucket): ?><a class="btn btn-secondary w-100" href="automation.php">Cancel Edit</a><?php endif; ?>
+                    <?php if ($editBucket): ?><a class="btn btn-secondary w-100" href="automation">Cancel Edit</a><?php endif; ?>
                 </div>
             </form>
         </div>

@@ -54,7 +54,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'mapping_rule' => $rule
             ]);
         }
-        header("Location: activities.php?vehicle=$vid&saved=1");
+        header("Location: activities?vehicle=$vid&saved=1");
         exit;
     }
 }
@@ -75,7 +75,7 @@ if ($vehicleId > 0) {
 <?php endif; ?>
 
 <div class="filter-bar">
-    <select id="vehicleSelect" class="searchable-select" onchange="location.href='activities.php?vehicle='+this.value">
+    <select id="vehicleSelect" class="searchable-select" onchange="location.href='activities?vehicle='+this.value">
         <option value="">All Vehicles</option>
         <?php foreach ($allVehicles as $v): ?>
         <option value="<?= $v['id'] ?>" <?= $vehicleId == $v['id'] ? 'selected' : '' ?>>

@@ -62,7 +62,7 @@ $qs = function (array $drop = []) use ($area, $status, $activity): string {
     if ($area !== 'all' && !in_array('area', $drop, true))     $p['area'] = $area;
     if ($status !== 'all' && !in_array('status', $drop, true)) $p['status'] = $status;
     if ($activity > 0 && !in_array('activity', $drop, true))   $p['activity'] = $activity;
-    return $p ? 'index.php?' . http_build_query($p) : 'index.php';
+    return $p ? 'dashboard?' . http_build_query($p) : 'dashboard';
 };
 
 function compactNum(int $n): string {
@@ -285,23 +285,23 @@ Layout::renderHead('Dashboard', true);
 </div>
 
 <div class="pipeline-card">
-    <a class="pp-col" href="push_log.php" title="Preview pending messages" data-preview="pipeline" data-col="open" data-pv-icon="inbox" data-pv-title="Open Items">
+    <a class="pp-col" href="push_log" title="Preview pending messages" data-preview="pipeline" data-col="open" data-pv-icon="inbox" data-pv-title="Open Items">
         <div class="pp-head"><span class="nm">Open Items</span><?= $info ?></div>
         <?= $pp([$openT, $openW, $openO]) ?>
     </a>
-    <a class="pp-col" href="push_log.php" title="Preview failed messages" data-preview="pipeline" data-col="await" data-pv-icon="clock" data-pv-title="Awaiting approval">
+    <a class="pp-col" href="push_log" title="Preview failed messages" data-preview="pipeline" data-col="await" data-pv-icon="clock" data-pv-title="Awaiting approval">
         <div class="pp-head"><span class="nm">Awaiting approval</span><?= $info ?><?= $urgent($awaitUrg) ?></div>
         <?= $pp([$awaitT, $awaitW, $awaitO]) ?>
     </a>
-    <a class="pp-col" href="automation.php" title="Preview queued messages" data-preview="pipeline" data-col="ready" data-pv-icon="list-checks" data-pv-title="Ready to be Assigned">
+    <a class="pp-col" href="automation" title="Preview queued messages" data-preview="pipeline" data-col="ready" data-pv-icon="list-checks" data-pv-title="Ready to be Assigned">
         <div class="pp-head"><span class="nm">Ready to be Assigned</span><?= $info ?><?= $urgent($readyUrg) ?></div>
         <?= $pp([$readyT, $readyW, $readyO]) ?>
     </a>
-    <a class="pp-col" href="automation.php" title="Preview events in progress" data-preview="pipeline" data-col="wip" data-pv-icon="zap" data-pv-title="Work in Progress (WIP)">
+    <a class="pp-col" href="automation" title="Preview events in progress" data-preview="pipeline" data-col="wip" data-pv-icon="zap" data-pv-title="Work in Progress (WIP)">
         <div class="pp-head"><span class="nm">Work in Progress (WIP)</span><?= $info ?><?= $urgent($wipUrg) ?></div>
         <?= $pp([$wipT, $wipW, $wipO]) ?>
     </a>
-    <a class="pp-col" href="push_log.php" title="Preview completed pushes" data-preview="pipeline" data-col="done" data-pv-icon="circle-check" data-pv-title="Recently completed">
+    <a class="pp-col" href="push_log" title="Preview completed pushes" data-preview="pipeline" data-col="done" data-pv-icon="circle-check" data-pv-title="Recently completed">
         <div class="pp-head"><span class="nm">Recently completed</span><?= $info ?><?= $urgent(0) ?></div>
         <?= $pp([$doneT, $doneW, $doneO]) ?>
     </a>
@@ -332,8 +332,8 @@ Layout::renderHead('Dashboard', true);
                 </div>
                 <?php if (Auth::canView()): ?>
                 <div style="display:flex; gap:8px; padding-top:4px;">
-                    <a class="btn btn-sm btn-ghost" href="vehicles.php?export=csv&amp;down=today" title="Export down-equipment list (today)"><i data-lucide="download"></i> CSV today</a>
-                    <a class="btn btn-sm btn-ghost" href="vehicles.php?export=csv&amp;down=week" title="Export down-equipment list (week)"><i data-lucide="download"></i> CSV week</a>
+                    <a class="btn btn-sm btn-ghost" href="vehicles?export=csv&amp;down=today" title="Export down-equipment list (today)"><i data-lucide="download"></i> CSV today</a>
+                    <a class="btn btn-sm btn-ghost" href="vehicles?export=csv&amp;down=week" title="Export down-equipment list (week)"><i data-lucide="download"></i> CSV week</a>
                 </div>
                 <?php endif; ?>
             </div>

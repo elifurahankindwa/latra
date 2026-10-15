@@ -261,7 +261,7 @@ function sseProgress(title, url, { subtitle = '', icon = 'layers', onDone = null
 document.getElementById('globalSearch')?.addEventListener('keyup', function(e) {
     if (e.key === 'Enter') {
         const q = this.value.trim();
-        if (q) location.href = 'vehicles.php?search=' + encodeURIComponent(q);
+        if (q) location.href = 'vehicles?search=' + encodeURIComponent(q);
     }
 });
 

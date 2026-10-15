@@ -56,6 +56,50 @@ if (APP_ENV === 'development') {
 ini_set('log_errors', '1');
 ini_set('error_log', LOGS_DIR . '/error.log');
 
+// ---------------------------------------------------------------------------
+// Branded error handling (pairs with error.php / the ErrorDocument rules in
+// .htaccess, which only cover errors raised by Apache itself).
+//   * Normal page views are buffered so a fatal error can throw away partial
+//     output and still send a clean status plus the themed error page.
+//   * API / preview / chat / CSV-export requests are never buffered and get a
+//     JSON or plain-text error instead of an HTML page.
+// ---------------------------------------------------------------------------
+if (PHP_SAPI !== 'cli') {
+    $errorPageFile = __DIR__ . '/includes/ErrorPage.php';
+    if (is_readable($errorPageFile)) {
+        require_once $errorPageFile;
+    }
+
+    if (class_exists('ErrorPage')) {
+        $errorMode = ErrorPage::mode();
+
+        if ($errorMode === 'html' && !headers_sent() && ob_get_level() === 0) {
+            ob_start();
+        }
+
+        set_exception_handler(static function (Throwable $e) use ($errorMode): void {
+            $detail = sprintf('Uncaught %s: %s in %s:%d',
+                get_class($e), $e->getMessage(), $e->getFile(), $e->getLine());
+            error_log('[error-page] ' . $detail);
+            ErrorPage::fatal(500, $errorMode, ['detail' => APP_ENV === 'development' ? $detail : '']);
+        });
+
+        register_shutdown_function(static function () use ($errorMode): void {
+            $err = error_get_last();
+            if (!$err || !in_array($err['type'],
+                    [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR], true)) {
+                return;
+            }
+            if (defined('ERROR_PAGE_RENDERED')) {
+                return; // a handler already produced the page
+            }
+            $detail = sprintf('Fatal error: %s in %s:%d', $err['message'], $err['file'], $err['line']);
+            error_log('[error-page] ' . $detail);
+            ErrorPage::fatal(500, $errorMode, ['detail' => APP_ENV === 'development' ? $detail : '']);
+        });
+    }
+}
+
 // Optional HTTPS enforcement once TLS is terminated at Apache.
 define('FORCE_HTTPS', envValue('FORCE_HTTPS', 'off') === 'on');
 if (FORCE_HTTPS

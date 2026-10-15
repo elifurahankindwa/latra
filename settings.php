@@ -17,11 +17,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($_POST['save_profile'])) {
         $displayName = trim($_POST['display_name'] ?? '');
         if ($displayName === '' || mb_strlen($displayName) > 100) {
-            header('Location: settings.php?tab=account&err=name'); exit;
+            header('Location: settings?tab=account&err=name'); exit;
         }
         Database::update('app_users', ['display_name' => $displayName], 'id = ?', [Auth::user()['uid']]);
         $_SESSION['auth']['display_name'] = $displayName;
-        header('Location: settings.php?tab=account&updated=profile'); exit;
+        header('Location: settings?tab=account&updated=profile'); exit;
     }
 
     if (isset($_POST['change_password'])) {
@@ -30,13 +30,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $confirm = $_POST['confirm_password'] ?? '';
         $me      = Database::fetch('SELECT * FROM app_users WHERE id = ?', [Auth::user()['uid']]);
         if (!$me || !password_verify($current, $me['password_hash'])) {
-            header('Location: settings.php?tab=account&err=current'); exit;
+            header('Location: settings?tab=account&err=current'); exit;
         }
         if (strlen($new) < 8) {
-            header('Location: settings.php?tab=account&err=short'); exit;
+            header('Location: settings?tab=account&err=short'); exit;
         }
         if ($new !== $confirm) {
-            header('Location: settings.php?tab=account&err=mismatch'); exit;
+            header('Location: settings?tab=account&err=mismatch'); exit;
         }
         $algo = defined('PASSWORD_ARGON2ID') ? PASSWORD_ARGON2ID : PASSWORD_DEFAULT;
         Database::update('app_users', [
@@ -45,10 +45,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'locked_until'   => null,
         ], 'id = ?', [(int) $me['id']]);
         Auth::audit('password_changed', 'user', $me['username'] ?? '', 'system');
-        header('Location: settings.php?tab=account&updated=password'); exit;
+        header('Location: settings?tab=account&updated=password'); exit;
     }
 
-    header('Location: settings.php?tab=account'); exit;
+    header('Location: settings?tab=account'); exit;
 }
 
 $me = Database::fetch('SELECT id, username, display_name, role, last_login_at, created_at FROM app_users WHERE id = ?', [Auth::user()['uid']]) ?? [];

@@ -19,3 +19,72 @@ Options -Indexes
 <IfModule mod_negotiation.c>
     Options -MultiViews
 </IfModule>
+
+# ---------------------------------------------------------------------------
+# Branded error pages (error.php renders any status through includes/ErrorPage.php).
+# Apache passes the original status in REDIRECT_STATUS, so no query string is
+# needed here; error.php also accepts ?code=NNN for direct testing.
+# NB: the target must be an absolute URL-path. If you deploy this app at a
+# virtual host root, replace the /latra-wialon-integration prefix with nothing.
+# ---------------------------------------------------------------------------
+ErrorDocument 400 /latra-wialon-integration/error.php
+ErrorDocument 401 /latra-wialon-integration/error.php
+ErrorDocument 403 /latra-wialon-integration/error.php
+ErrorDocument 404 /latra-wialon-integration/error.php
+ErrorDocument 405 /latra-wialon-integration/error.php
+ErrorDocument 408 /latra-wialon-integration/error.php
+ErrorDocument 410 /latra-wialon-integration/error.php
+ErrorDocument 413 /latra-wialon-integration/error.php
+ErrorDocument 414 /latra-wialon-integration/error.php
+ErrorDocument 429 /latra-wialon-integration/error.php
+ErrorDocument 500 /latra-wialon-integration/error.php
+ErrorDocument 501 /latra-wialon-integration/error.php
+ErrorDocument 502 /latra-wialon-integration/error.php
+ErrorDocument 503 /latra-wialon-integration/error.php
+ErrorDocument 504 /latra-wialon-integration/error.php
+
+# ---------------------------------------------------------------------------
+# Hide the .php extension in browser URLs.
+#   /vehicles?id=3            is served by vehicles.php
+#   /vehicles.php?id=3  301s  to /vehicles?id=3
+#   /dashboard                is served by index.php
+#   /index, /index.php  301s  to /dashboard
+# ---------------------------------------------------------------------------
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # 0) The dashboard is canonical at /dashboard (index.php is just the file
+    #    behind it). Old /index and /index.php links are sent there.
+    #    Same guard as rule 1: THE_REQUEST keeps this off the internal pass,
+    #    Accept: text/html keeps fetch/XHR on the .php endpoint.
+    RewriteCond %{HTTP_ACCEPT} text/html [NC]
+    RewriteCond %{THE_REQUEST} ^GET\s/+(.+?/)?index(\.php)?[\s?] [NC]
+    RewriteRule ^ /%1dashboard [R=301,L]
+
+    # 1) Canonicalise: strip .php from the address bar.
+    #    THE_REQUEST holds the original client request line (never touched by
+    #    internal rewrites), which keeps the second rule below from bouncing.
+    #    GET + HTML Accept means only real browser navigations are redirected,
+    #    so XHR/fetch/POST calls to api.php, preview.php, ai_chat.php and
+    #    users.php keep hitting the .php endpoint untouched.
+    #    NB: the capture group lives in the LAST condition -- %1 reads the last
+    #    matched RewriteCond, so the Accept check must come first.
+    RewriteCond %{HTTP_ACCEPT} text/html [NC]
+    RewriteCond %{THE_REQUEST} ^GET\s/+(.+?)\.php[\s?] [NC]
+    RewriteRule ^ /%1 [R=301,L]
+
+    # 2) /dashboard is served by index.php (the dashboard's real file).
+    RewriteRule ^dashboard$ index.php [L]
+
+    # 3) /page (and /page/) is served from page.php, but only when page.php really
+    #    exists. Unknown names therefore fall straight through to a clean 404 and
+    #    deep paths like /a/b/c are never rewritten into non-existent directories
+    #    (which used to burn Apache's internal-redirect limit before the error
+    #    document could run). Real files (assets, css, js, images) are untouched.
+    #    %1 = requested path with any trailing slash removed, so the -f test works
+    #    for both /page and /page/ without a second rewrite pass.
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteCond %{REQUEST_FILENAME} ^(.*?)/?$
+    RewriteCond %1.php -f
+    RewriteRule ^([^/.]+?)/?$ $1.php [L]
+</IfModule>

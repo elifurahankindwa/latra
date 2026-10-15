@@ -62,7 +62,7 @@ Layout::renderHead('Push Log');
     <?php if (Auth::canWrite()): ?>
     <button class="btn btn-primary" onclick="openManualPush()"><i data-lucide="upload"></i> Push to LATRA</button>
     <?php endif; ?>
-    <a class="btn btn-secondary" href="<?= htmlspecialchars('push_log.php?export=csv' . ($statusFilter ? '&status=' . urlencode($statusFilter) : '')) ?>"><i data-lucide="download"></i> Export CSV</a>
+    <a class="btn btn-secondary" href="<?= htmlspecialchars('push_log?export=csv' . ($statusFilter ? '&status=' . urlencode($statusFilter) : '')) ?>"><i data-lucide="download"></i> Export CSV</a>
 </div>
 
 <form method="GET" class="filter-bar">
@@ -73,7 +73,7 @@ Layout::renderHead('Push Log');
         <option value="pending" <?= $statusFilter === 'pending' ? 'selected' : '' ?>>Pending</option>
         <option value="failed" <?= $statusFilter === 'failed' ? 'selected' : '' ?>>Failed</option>
     </select>
-    <?php if ($statusFilter): ?><a class="btn btn-secondary btn-sm" href="push_log.php">Clear</a><?php endif; ?>
+    <?php if ($statusFilter): ?><a class="btn btn-secondary btn-sm" href="push_log">Clear</a><?php endif; ?>
 </form>
 
 <div class="card">
@@ -128,7 +128,7 @@ Layout::renderHead('Push Log');
             </tbody>
         </table>
     </div>
-    <?= Layout::pagination($page, $totalPages, $statusFilter ? 'push_log.php?status=' . urlencode($statusFilter) : 'push_log.php?') ?>
+    <?= Layout::pagination($page, $totalPages, $statusFilter ? 'push_log?status=' . urlencode($statusFilter) : 'push_log?') ?>
 </div>
 
 <style>

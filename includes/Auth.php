@@ -97,7 +97,7 @@ class Auth {
 
     public static function requireLogin(): void {
         if (!self::check()) {
-            header('Location: login.php');
+            header('Location: login');
             exit;
         }
         if (class_exists('Schema')) {
@@ -141,9 +141,7 @@ class Auth {
     public static function requireRole(array $roles): void {
         self::requireLogin();
         if (!in_array(self::role(), $roles, true)) {
-            http_response_code(403);
-            echo 'Forbidden';
-            exit;
+            self::deny(403);
         }
     }
 
@@ -151,9 +149,22 @@ class Auth {
     public static function requireView(string $perm): void {
         self::requireLogin();
         if (!self::hasPermission($perm)) {
-            http_response_code(403);
-            exit('Forbidden');
+            self::deny(403);
         }
+    }
+
+    /**
+     * Refuse a page request with the branded error page.
+     * API-ish requests still receive their JSON/text error instead of HTML.
+     */
+    private static function deny(int $code = 403): void {
+        if (class_exists('ErrorPage')) {
+            ErrorPage::reject($code);
+        } else {
+            http_response_code($code);
+            echo 'Forbidden';
+        }
+        exit;
     }
 
     public static function requireWrite(): void {

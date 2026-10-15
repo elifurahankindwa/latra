@@ -170,7 +170,9 @@ class Layout {
                 continue;
             }
             $active = $current === $item[0] ? ' active' : '';
-            $items .= '<a href="' . $item[0] . '.php" class="dock-item' . $active . '"'
+            // index.php is published at the canonical /dashboard URL.
+            $slug = $item[0] === 'index' ? 'dashboard' : $item[0];
+            $items .= '<a href="' . $slug . '" class="dock-item' . $active . '"'
                 . ' data-tip="' . htmlspecialchars($item[1]) . '"'
                 . ' aria-label="' . htmlspecialchars($item[1]) . '">'
                 . '<span class="dock-ico"><i data-lucide="' . Icon::fixStripped($item[2]) . '"></i></span>'
@@ -195,7 +197,7 @@ class Layout {
         }
         $initials = $initials !== '' ? $initials : 'OP';
         $logout = class_exists('Auth') && method_exists('Auth', 'csrfToken')
-            ? '<a class="tb-dd-opt" href="login.php?logout=1&amp;_csrf=' . Auth::csrfToken() . '"><i data-lucide="log-out"></i>&nbsp; Sign out</a>'
+            ? '<a class="tb-dd-opt" href="login?logout=1&amp;_csrf=' . Auth::csrfToken() . '"><i data-lucide="log-out"></i>&nbsp; Sign out</a>'
             : '';
 
         $area   = $_GET['area'] ?? 'all';
@@ -210,10 +212,10 @@ class Layout {
         $adminRole = class_exists('Auth') && method_exists('Auth', 'role') ? Auth::role() : '';
         $adminChips = $canWrite
             ? '<a href="#" class="tb-dd-opt" onclick="syncWialon(event)"><i data-lucide="rotate-cw"></i>&nbsp; Sync vehicles</a>'
-            . '<a href="automation.php" class="tb-dd-opt"><i data-lucide="zap"></i>&nbsp; Run automation</a>'
-            . '<a href="settings.php" class="tb-dd-opt"><i data-lucide="settings"></i>&nbsp; Settings</a><div class="tb-dd-sep"></div>'
-            . '<a href="settings.php" class="tb-dd-opt"><i data-lucide="user-cog"></i>&nbsp; Profile</a>'
-            . ($adminRole === 'admin' ? '<a href="users.php" class="tb-dd-opt"><i data-lucide="users"></i>&nbsp; Users</a>' : '')
+            . '<a href="automation" class="tb-dd-opt"><i data-lucide="zap"></i>&nbsp; Run automation</a>'
+            . '<a href="settings" class="tb-dd-opt"><i data-lucide="settings"></i>&nbsp; Settings</a><div class="tb-dd-sep"></div>'
+            . '<a href="settings" class="tb-dd-opt"><i data-lucide="user-cog"></i>&nbsp; Profile</a>'
+            . ($adminRole === 'admin' ? '<a href="users" class="tb-dd-opt"><i data-lucide="users"></i>&nbsp; Users</a>' : '')
             : '<span class="tb-dd-opt" style="color:var(--text-muted)">' . htmlspecialchars((string) (class_exists('Auth') ? Auth::role() : '')) . '</span><div class="tb-dd-sep"></div>';
 
         $areaLabel   = ['all' => 'All areas', 'dar' => 'Dar es Salaam', 'up' => 'Upcountry'][$area];
@@ -231,7 +233,7 @@ class Layout {
             if ($key === 'area' && $val !== 'all')      $p['area'] = $val;
             if ($key === 'status' && $val !== 'all')    $p['status'] = $val;
             if ($key === 'activity' && $val !== 'all')  $p['activity'] = (int) $val;
-            return $p ? 'index.php?' . http_build_query($p) : 'index.php';
+            return $p ? 'dashboard?' . http_build_query($p) : 'dashboard';
         };
         $activityOpts = '';
         if (class_exists('Database')) {

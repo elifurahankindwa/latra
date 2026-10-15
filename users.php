@@ -190,7 +190,7 @@ Layout::renderHead('Users');
                     <td class="text-muted"><?= $u['last_login_at'] ? e(toDisplay((string) $u['last_login_at'])) : 'Never' ?></td>
                     <td>
                         <?php if ((int) $u['id'] === $selfId): ?>
-                            <a class="btn btn-sm btn-ghost" href="settings.php?tab=account">Edit profile</a>
+                            <a class="btn btn-sm btn-ghost" href="settings?tab=account">Edit profile</a>
                         <?php else: ?>
                             <?php if (!$u['is_active']): ?>
                             <form method="post" class="inline-form">

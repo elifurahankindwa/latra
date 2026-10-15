@@ -90,7 +90,7 @@ Layout::renderHead('Vehicles');
         <?php if (Auth::canWrite()): ?>
         <button class="btn btn-primary" onclick="syncWialon(event)"><i data-lucide="rotate-cw"></i> Sync from Wialon</button>
         <?php endif; ?>
-        <a class="btn btn-secondary" href="<?= htmlspecialchars('vehicles.php?export=csv' . ($search ? '&search=' . urlencode($search) : '') . ($status !== '' ? '&status=' . urlencode($status) : '') . ($down ? '&down=' . urlencode($down) : '')) ?>"><i data-lucide="download"></i> Export CSV</a>
+        <a class="btn btn-secondary" href="<?= htmlspecialchars('vehicles?export=csv' . ($search ? '&search=' . urlencode($search) : '') . ($status !== '' ? '&status=' . urlencode($status) : '') . ($down ? '&down=' . urlencode($down) : '')) ?>"><i data-lucide="download"></i> Export CSV</a>
     </div>
 </div>
 
@@ -166,9 +166,9 @@ Layout::renderHead('Vehicles');
                     </td>
                     <td>
                         <div class="action-group">
-                            <a href="vehicle_detail.php?id=<?= $v['id'] ?>" class="btn-icon-sm" title="View Details"><i data-lucide="eye"></i></a>
+                            <a href="vehicle_detail?id=<?= $v['id'] ?>" class="btn-icon-sm" title="View Details"><i data-lucide="eye"></i></a>
                             <?php if (Auth::canWrite()): ?>
-                            <a href="activities.php?vehicle=<?= $v['id'] ?>" class="btn-icon-sm" title="Manage Activities"><i data-lucide="list-checks"></i></a>
+                            <a href="activities?vehicle=<?= $v['id'] ?>" class="btn-icon-sm" title="Manage Activities"><i data-lucide="list-checks"></i></a>
                             <button class="btn-icon-sm" onclick="fetchMessages(<?= $v['id'] ?>)" title="Fetch Messages"><i data-lucide="download"></i></button>
                             <button class="btn-icon-sm" onclick="toggleVehicle(<?= $v['id'] ?>, <?= $v['is_active'] ? 0 : 1 ?>)" title="<?= $v['is_active'] ? 'Deactivate' : 'Activate' ?>">
                                 <i data-lucide="<?= Icon::fixStripped($v['is_active'] ? 'pause' : 'play') ?>"></i>
@@ -184,7 +184,7 @@ Layout::renderHead('Vehicles');
             </tbody>
         </table>
     </div>
-    <?= Layout::pagination($page, $totalPages, 'vehicles.php?search=' . urlencode($search) . '&status=' . $status) ?>
+    <?= Layout::pagination($page, $totalPages, 'vehicles?search=' . urlencode($search) . '&status=' . $status) ?>
 </div>
 
 <!-- Bulk Actions Bar -->
@@ -227,7 +227,7 @@ function debounceSearch() {
 function applyFilters() {
     const search = document.getElementById('vehicleSearch').value;
     const status = document.getElementById('statusFilter').value;
-    window.location.href = 'vehicles.php?search=' + encodeURIComponent(search) + '&status=' + status;
+    window.location.href = 'vehicles?search=' + encodeURIComponent(search) + '&status=' + status;
 }
 
 // Single-vehicle operations

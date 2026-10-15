@@ -7,12 +7,12 @@ if (isset($_GET['logout'])) {
     if (Auth::verifyCsrf($_GET['_csrf'] ?? '')) {
         Auth::logout();
     }
-    header('Location: login.php');
+    header('Location: login');
     exit;
 }
 
 if (Auth::check()) {
-    header('Location: index.php');
+    header('Location: dashboard');
     exit;
 }
 
@@ -28,7 +28,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         Auth::logLoginAttempt($username, 'invalid', $extra);
         $error = 'Enter both username and password.';
     } elseif (Auth::attempt($username, $password, $extra)) {
-        header('Location: index.php');
+        header('Location: dashboard');
         exit;
     } else {
         $error = 'Invalid credentials.';

@@ -116,11 +116,11 @@ switch ($kind) {
     // ---- Pipeline columns -------------------------------------------------
     case 'pipeline':
         $cols = [
-            'open'  => ['title' => 'Open Items',               'page' => 'push_log.php',      'chip' => 'Pending'],
-            'await' => ['title' => 'Awaiting approval',        'page' => 'push_log.php',      'chip' => 'Failed'],
-            'ready' => ['title' => 'Ready to be Assigned',     'page' => 'automation.php',    'chip' => 'Pending'],
-            'wip'   => ['title' => 'Work in Progress (WIP)',   'page' => 'automation.php',    'chip' => ''],
-            'done'  => ['title' => 'Recently completed',       'page' => 'push_log.php',      'chip' => 'Sent'],
+            'open'  => ['title' => 'Open Items',               'page' => 'push_log',      'chip' => 'Pending'],
+            'await' => ['title' => 'Awaiting approval',        'page' => 'push_log',      'chip' => 'Failed'],
+            'ready' => ['title' => 'Ready to be Assigned',     'page' => 'automation',    'chip' => 'Pending'],
+            'wip'   => ['title' => 'Work in Progress (WIP)',   'page' => 'automation',    'chip' => ''],
+            'done'  => ['title' => 'Recently completed',       'page' => 'push_log',      'chip' => 'Sent'],
         ];
         $spec = $cols[$col] ?? null;
         if (!$spec) pvErr('Unknown pipeline column');
@@ -225,7 +225,7 @@ switch ($kind) {
         if (!$rows) {
             pvJson(['ok' => true, 'icon' => 'truck-arrow-right', 'title' => 'Down equipment',
                 'subtitle' => ucfirst($span) . ' · no units offline', 'content' => '',
-                'footer' => $footer([['Open vehicles…', 'vehicles.php', 'truck']])]);
+                'footer' => $footer([['Open vehicles…', 'vehicles', 'truck']])]);
         }
         $items = '';
         foreach ($rows as $r) {
@@ -240,7 +240,7 @@ switch ($kind) {
         pvJson(['ok' => true, 'icon' => 'truck-arrow-right', 'title' => 'Down equipment',
             'subtitle' => ucfirst($span) . ' · ' . count($rows) . ' unit(s) without a recent GPS fix',
             'content' => '<div class="pv-list">' . $items . '</div>',
-            'footer' => $footer([['Open vehicles…', 'vehicles.php', 'truck']])]);
+            'footer' => $footer([['Open vehicles…', 'vehicles', 'truck']])]);
 
     // ---- Locations ---------------------------------------------------------
     case 'loc':
@@ -278,7 +278,7 @@ switch ($kind) {
         pvJson(['ok' => true, 'icon' => 'map-pin', 'title' => 'Locations · ' . $label,
             'subtitle' => count($rows) . ' unit(s) · ' . $hintText,
             'content' => '<div class="pv-list">' . $items . '</div>',
-            'footer' => $footer([['Open vehicles…', 'vehicles.php', 'truck']])]);
+            'footer' => $footer([['Open vehicles…', 'vehicles', 'truck']])]);
 
     // ---- Single records ----------------------------------------------------
     case 'event':
@@ -303,7 +303,7 @@ switch ($kind) {
         pvJson(['ok' => true, 'icon' => 'bolt', 'title' => 'Event preview',
             'subtitle' => 'Recorded by the Wialon integration',
             'content' => pvDetailRows($rows),
-            'footer' => $footer([['Open Automation…', 'automation.php', 'bolt']])]);
+            'footer' => $footer([['Open Automation…', 'automation', 'bolt']])]);
 
     case 'push':
         $p = Database::fetch(
@@ -326,7 +326,7 @@ switch ($kind) {
         pvJson(['ok' => true, 'icon' => 'paper-plane', 'title' => 'Push preview',
             'subtitle' => 'LATRA push log entry',
             'content' => pvDetailRows($rows),
-            'footer' => $footer([['Open Push log…', 'push_log.php', 'paper-plane']])]);
+            'footer' => $footer([['Open Push log…', 'push_log', 'paper-plane']])]);
 
     // ---- Unit scope (used by quick push actions) --------------------------
     case 'scope':

@@ -7,13 +7,13 @@ Auth::requireView('vehicles.view');
 
 $vehicleId = intval($_GET['id'] ?? 0);
 if (!$vehicleId) {
-    header('Location: vehicles.php');
+    header('Location: vehicles');
     exit;
 }
 
 $vehicle = Database::fetch("SELECT * FROM vehicles WHERE id = ?", [$vehicleId]);
 if (!$vehicle) {
-    header('Location: vehicles.php');
+    header('Location: vehicles');
     exit;
 }
 
@@ -160,13 +160,13 @@ Layout::assistContext(['vehicle_id' => $vehicleId, 'vehicle_reg_no' => $vehicle[
 ?>
 
 <div class="page-header">
-    <a href="vehicles.php" class="back-link"><i data-lucide="arrow-left"></i> Back to Vehicles</a>
+    <a href="vehicles" class="back-link"><i data-lucide="arrow-left"></i> Back to Vehicles</a>
     <h1><i data-lucide="truck"></i> <?= htmlspecialchars($vehicle['vehicle_reg_no']) ?></h1>
     <div class="page-actions">
         <?php if (Auth::canWrite()): ?>
         <button class="btn btn-secondary" onclick="syncSingleVehicle(<?= $vehicleId ?>)"><i data-lucide="rotate-cw"></i> Sync</button>
         <button class="btn btn-primary" onclick="fetchMessages(<?= $vehicleId ?>)"><i data-lucide="download"></i> Fetch Messages</button>
-        <a href="activities.php?vehicle=<?= $vehicleId ?>" class="btn btn-ghost"><i data-lucide="list-checks"></i> Map Activities</a>
+        <a href="activities?vehicle=<?= $vehicleId ?>" class="btn btn-ghost"><i data-lucide="list-checks"></i> Map Activities</a>
         <?php endif; ?>
     </div>
 </div>
@@ -226,7 +226,7 @@ Layout::assistContext(['vehicle_id' => $vehicleId, 'vehicle_reg_no' => $vehicle[
             </div>
             <?php endforeach; ?>
             <?php if (empty($mappings)): ?>
-            <p class="text-muted">No activities mapped yet. <a href="activities.php?vehicle=<?= $vehicleId ?>">Configure now</a></p>
+            <p class="text-muted">No activities mapped yet. <a href="activities?vehicle=<?= $vehicleId ?>">Configure now</a></p>
             <?php endif; ?>
         </div>
     </div>
@@ -347,7 +347,7 @@ Layout::assistContext(['vehicle_id' => $vehicleId, 'vehicle_reg_no' => $vehicle[
             </tbody>
         </table>
     </div>
-    <?= Layout::pagination($page, $totalPages, "vehicle_detail.php?id=$vehicleId") ?>
+    <?= Layout::pagination($page, $totalPages, "vehicle_detail?id=$vehicleId") ?>
 </div>
 
 <script>
