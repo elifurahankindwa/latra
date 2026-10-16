@@ -344,6 +344,9 @@ class Automation {
     }
 
     public static function recordPush(array $msg, int $activityId, array $result, string $claimId, int $attempt): void {
+        // Preserve legacy HTTP receipts, but do not duplicate centrally recorded or local-only results.
+        if (!empty($result['recorded']) || !empty($result['deduplicated'])
+            || (array_key_exists('attempted', $result) && !$result['attempted'])) return;
         Database::insert('push_log', [
             'vehicle_id' => $msg['vehicle_id'],
             'activity_id' => $activityId,
@@ -361,7 +364,8 @@ class Automation {
     /** Permanent vs transient so retries only burn on recoverable failures. */
     public static function classifyFailure(int $httpCode, array $responseData, string $curlError): string {
         if ($curlError !== '') return 'transient';
-        if ($httpCode === 0 || $httpCode >= 500) return 'transient';
+        // Throttling and request timeouts must wait and retry, not become permanent rejection.
+        if (in_array($httpCode, [0, 408, 425, 429], true) || $httpCode >= 500) return 'transient';
         if ($httpCode >= 400 && $httpCode <= 499) return 'permanent';
         return 'permanent'; // HTTP 200 with status != '1' — the API rejected the payload
     }

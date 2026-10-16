@@ -140,8 +140,7 @@ class Scheduler {
 
     private static function jobReconcile(): int {
         $n = Outbox::reconcileStale(300);
-        // Reset terminal 'failed' items (transient errors) back to pending
-        // after 30 minutes so they retry when the endpoint recovers.
+        // Preserve the original automatic cooldown; only actual attempts consume retry budget.
         $reset = Outbox::resetTerminal(1800);
         Database::query(
             "UPDATE jobs SET locked_until = NULL WHERE locked_until IS NOT NULL AND locked_until < NOW()"
@@ -211,121 +210,46 @@ class Scheduler {
         return $items;
     }
 
-    /**
-     * Flush pending outbox items to LATRA with a 2-minute hard time limit.
-     *
-     * Any items still in_flight when the time limit hits are released back to
-     * 'pending' with zero delay so they join the next flush batch. This
-     * guarantees LATRA downtime never blocks the scheduler for more than 2
-     * minutes and that nothing is silently dropped.
-     */
+    /** Drain small candidate pages without claiming work that cannot start in time. */
     private static function jobFlush(bool $emergencyOnly): int {
-        $maxRunSeconds = 120;
-        $batchSize = $emergencyOnly ? 40 : 80;
-        $batch = Outbox::claimBatch($batchSize, $emergencyOnly);
-        $ok = 0;
-        $fail = 0;
-        $skipped = 0;
-        $released = 0;
-        $started = microtime(true);
-
-        foreach ($batch as $row) {
-            if ((microtime(true) - $started) > $maxRunSeconds) {
+        $started = hrtime(true);
+        $budget = 120; // The original two-minute budget applies to both flush modes.
+        $limit = $emergencyOnly ? 40 : 80;
+        $ok = $fail = $deferred = $processed = 0;
+        // Start only work that fits within the original overall deadline.
+        while ($processed < $limit && (hrtime(true) - $started) / 1e9 < $budget) {
+            $rows = Outbox::claimBatch(1, $emergencyOnly);
+            if (!$rows) break;
+            $row = $rows[0];
+            // Delivery validates and reuses the stored body while holding its key lock.
+            $remaining = (int) floor($budget - (hrtime(true) - $started) / 1e9);
+            if ($remaining <= 0) break; // Selection alone does not claim or charge the row.
+            $result = LatraAdapter::submit([], $row['idempotency_key'], $remaining);
+            $processed++;
+            if (!empty($result['deferred'])) {
+                $deferred++;
+                // Another sender may own this first candidate; do not busy-spin on it.
                 break;
             }
-
-            $payload = self::rebuildPayloadForFlush($row);
-            $result = LatraAdapter::submit($payload, $row['idempotency_key']);
-            $msg = [
-                'vehicle_id' => $row['vehicle_id'],
-                'id' => $row['message_id'],
-                'message_id' => $row['message_id'],
-            ];
-            LatraAdapter::recordPush($msg, (int) $row['activity_id'], $result, (string) $row['id'], (int) $row['tries'] + 1);
-            if (!empty($result['skipped'])) {
-                Database::update('outbox', [
-                    'status' => 'rejected',
-                    'in_flight_at' => null,
-                    'last_error' => 'LATRA adapter skipped this outbox payload',
-                ], 'id = ?', [$row['id']]);
-                $skipped++;
-                continue;
-            }
-            if ($result['ok']) {
-                Outbox::markSent((int) $row['id']);
-                Database::update('message_log', [
-                    'latra_status' => 'sent',
+            LatraAdapter::recordPush(['vehicle_id' => $row['vehicle_id'], 'id' => $row['message_id']],
+                (int) $row['activity_id'], $result, (string) $row['id'], (int) $row['tries'] + 1);
+            if (!empty($result['ok'])) {
+                Database::update('message_log', ['latra_status' => 'sent',
                     'pushed_at' => date(DATE_FORMAT),
-                    'latra_response' => substr((string) $result['response'], 0, 2000),
-                ], 'id = ?', [$row['message_id']]);
+                    'latra_response' => substr((string) $result['response'], 0, 2000)], 'id = ?', [$row['message_id']]);
                 $ok++;
             } else {
-                $class = Automation::classifyFailure($result['httpCode'], $result['responseData'], $result['curlError']);
-                Outbox::markFailed((int) $row['id'], $result['curlError'] ?: $result['response'], $class, (int) $row['tries'] + 1);
-                Database::update('message_log', [
-                    'latra_status' => $class === 'permanent' ? 'failed' : 'pending',
-                    'latra_response' => substr((string) ($result['curlError'] ?: $result['response']), 0, 2000),
-                ], 'id = ?', [$row['message_id']]);
+                // Delivery owns retry state; source projections must not overwrite that state.
                 $fail++;
             }
         }
-
-        // Release any in_flight items we didn't process (time limit hit).
-        // Reset to pending with zero delay so they join the next flush batch
-        // immediately along with any new messages.
-        $remaining = Database::fetchAll(
-            "SELECT id FROM outbox WHERE status = 'in_flight' AND in_flight_at < NOW() - INTERVAL 10 SECOND LIMIT 500"
-        );
-        foreach ($remaining as $r) {
-            Database::query(
-                "UPDATE outbox SET status = 'pending', next_attempt_at = NOW(), in_flight_at = NULL WHERE id = ?",
-                [$r['id']]
-            );
-            $released++;
-        }
-
-        $elapsed = (int) round(microtime(true) - $started);
-        $depth = Outbox::depth();
-        if ($depth['pending'] > 500 || $depth['failed'] > 50) {
-            Webhooks::emit('outbox_pressure', $depth);
-        }
-        Logger::info('outbox.flush', [
-            'ok' => $ok, 'fail' => $fail, 'skipped' => $skipped, 'released' => $released,
-            'elapsed_s' => $elapsed, 'emergency' => $emergencyOnly,
-            'depth_pending' => $depth['pending'], 'depth_failed' => $depth['failed'],
-        ]);
-        return $ok + $fail + $skipped + $released;
-    }
-
-    private static function rebuildPayloadForFlush(array $row): array {
-        $stored = json_decode($row['payload'] ?? '[]', true) ?: [];
-
-        try {
-            $msg = Database::fetch(
-                "SELECT ml.*, v.vehicle_reg_no, v.imei, v.name AS vehicle_name
-                 FROM message_log ml
-                 JOIN vehicles v ON ml.vehicle_id = v.id
-                 WHERE ml.id = ?",
-                [$row['message_id']]
-            );
-            if ($msg) {
-                $fresh = LatraMapper::buildPayload(
-                    $msg, $msg, (int) $row['activity_id'],
-                    json_decode($msg['addon_info'] ?? '[]', true) ?: [],
-                    json_decode($msg['fuel_info'] ?? '[]', true) ?: []
-                );
-                if (!empty($fresh['items'])) {
-                    return $fresh;
-                }
-            }
-        } catch (\Throwable $e) {
-            Logger::error('flush.rebuild_failed', [
-                'outbox_id' => $row['id'],
-                'message_id' => $row['message_id'],
-                'error'     => $e->getMessage(),
-            ]);
-        }
-        return $stored;
+        // Preserve pressure alerts using bounded index probes instead of a full-history SUM.
+        $pressure = Outbox::pressure();
+        if ($pressure !== null) Webhooks::emit('outbox_pressure', $pressure);
+        // Flush telemetry is constant work rather than an aggregate over all retained queue history.
+        Logger::info('outbox.flush', ['ok' => $ok, 'fail' => $fail, 'deferred' => $deferred,
+            'elapsed_s' => round((hrtime(true) - $started) / 1e9, 3), 'emergency' => $emergencyOnly]);
+        return $processed;
     }
 
     private static function jobFuelReport(): int {
@@ -418,89 +342,21 @@ class Scheduler {
         return 1;
     }
 
+    /** Archive in small transactions while honoring the original daily retention window. */
     private static function jobRetention(): int {
         $days = Schema::configInt('retention_days', 90);
-        $moved = 0;
-        try {
-            Database::query(
-                "INSERT INTO message_log_archive SELECT * FROM message_log WHERE created_at < NOW() - INTERVAL ? DAY",
-                [$days]
-            );
-            $stmt = Database::query(
-                "DELETE FROM message_log WHERE created_at < NOW() - INTERVAL ? DAY",
-                [$days]
-            );
-            $moved += $stmt->rowCount();
-        } catch (Throwable $e) {
-            Logger::warn('retention.messages', ['error' => $e->getMessage()]);
-        }
-
-        // Rows already accepted by LATRA are dead weight: drop them once they
-        // age out of the operational window so the hot tables stay small.
+        $moved = Retention::archiveMessages($days);
         $moved += self::purgeDelivered();
-
-        $logFiles = glob(LOGS_DIR . '/*.log') ?: [];
-        foreach ($logFiles as $f) {
-            if (filemtime($f) < time() - ($days * 86400)) {
-                @unlink($f);
-            }
+        // Keep the original log age policy and leave filesystem cleanup on its existing schedule.
+        foreach (glob(LOGS_DIR . '/*.log') ?: [] as $file) {
+            if (filemtime($file) < time() - $days * 86400) @unlink($file);
         }
         return $moved;
     }
 
-    /**
-     * Delete everything LATRA has already confirmed, once it is older than
-     * `delivered_retention_hours` (default 24h).
-     *
-     * Deletion order matters: push_log and outbox reference message_log, so
-     * they go first (push_log.message_log_id is ON DELETE SET NULL, outbox
-     * cascades). Deletes are chunked with LIMIT so a single cycle never holds
-     * a long row lock on the live pipeline tables.
-     *
-     * @return int rows removed
-     */
+    /** Honor the original hour-based purge policy and its existing scheduled job. */
     public static function purgeDelivered(): int {
-        $hours = max(1, Schema::configInt('delivered_retention_hours', 24));
-        $total = 0;
-
-        $batches = [
-            // LATRA push receipts for accepted payloads.
-            "DELETE FROM push_log
-             WHERE response_status = '1'
-               AND created_at < NOW() - INTERVAL $hours HOUR
-             LIMIT 2000",
-            // Completed queue entries (payload already duplicated in push_log).
-            "DELETE FROM outbox
-             WHERE status = 'sent'
-               AND updated_at < NOW() - INTERVAL $hours HOUR
-             LIMIT 2000",
-            // Source messages that were pushed through successfully.
-            "DELETE FROM message_log
-             WHERE latra_status = 'sent'
-               AND pushed_at IS NOT NULL
-               AND pushed_at < NOW() - INTERVAL $hours HOUR
-             LIMIT 2000",
-        ];
-
-        foreach ($batches as $sql) {
-            try {
-                // Loop until a batch comes back empty (or we hit a safety cap).
-                for ($i = 0; $i < 50; $i++) {
-                    $deleted = Database::query($sql)->rowCount();
-                    if ($deleted <= 0) {
-                        break;
-                    }
-                    $total += $deleted;
-                }
-            } catch (Throwable $e) {
-                Logger::warn('retention.delivered', ['error' => $e->getMessage()]);
-            }
-        }
-
-        if ($total > 0) {
-            Logger::info('retention.delivered_purged', ['rows' => $total, 'hours' => $hours]);
-        }
-        return $total;
+        return Retention::purgeDelivered();
     }
 
     private static function jobRollup(): int {

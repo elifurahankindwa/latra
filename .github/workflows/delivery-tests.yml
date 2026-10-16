@@ -1,0 +1,69 @@
+name: Delivery and retention regression tests
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  delivery:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        database: ['mysql:8.0', 'mariadb:10.11']
+    services:
+      database:
+        image: ${{ matrix.database }}
+        env:
+          MYSQL_ROOT_PASSWORD: synthetic-test-password
+          MYSQL_DATABASE: latra_test_delivery
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -psynthetic-test-password"
+          --health-interval=5s --health-timeout=5s --health-retries=30
+    steps:
+      - uses: actions/checkout@v4
+      # PHP has no package dependencies; only database/CSV extensions are required.
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: pdo_mysql, pdo_sqlite, mbstring
+          coverage: none
+      - name: Parse PHP sources
+        run: find . -name '*.php' -not -path './.git/*' -print0 | xargs -0 -n1 php -l
+      - name: Verify SQL and delivery state against disposable database
+        env:
+          LATRA_TEST_DSN: mysql:host=127.0.0.1;port=3306;dbname=latra_test_delivery;charset=utf8mb4
+          LATRA_TEST_USER: root
+          LATRA_TEST_PASSWORD: synthetic-test-password
+          LATRA_TEST_ALLOW_RESET: '1'
+        run: php tests/delivery-retention.php
+      # The only HTTP integration in this suite is an ephemeral local mock.
+      - name: Verify adapter against mock HTTP destination
+        env:
+          LATRA_TEST_DSN: mysql:host=127.0.0.1;port=3306;dbname=latra_test_delivery;charset=utf8mb4
+          LATRA_TEST_USER: root
+          LATRA_TEST_PASSWORD: synthetic-test-password
+          LATRA_TEST_ALLOW_RESET: '1'
+          LATRA_TEST_HTTP_URL: http://127.0.0.1:18777/
+        run: |
+          php -S 127.0.0.1:18777 tests/mock-latra.php > /tmp/latra-mock.log 2>&1 &
+          mock_pid=$!
+          trap 'kill "$mock_pid"' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --silent --fail http://127.0.0.1:18777/ > /dev/null; then break; fi
+            sleep 1
+          done
+          php tests/http-delivery.php
+      # Explicit DDL is checked twice so an interrupted/repeated upgrade can resume.
+      - name: Verify index migration is repeatable
+        env:
+          DB_HOST: 127.0.0.1
+          DB_NAME: latra_test_delivery
+          DB_USER: root
+          DB_PASS: synthetic-test-password
+        run: |
+          php scripts/migrate-delivery.php
+          php scripts/migrate-delivery.php

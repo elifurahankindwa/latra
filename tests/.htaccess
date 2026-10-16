@@ -1,0 +1,2 @@
+# Tests are CLI-only and must never be served by Apache.
+Require all denied

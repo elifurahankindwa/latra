@@ -124,7 +124,16 @@ class BucketRunner {
         $payload = LatraMapper::buildPayload($vehicle, $target, $activityId, $addonInfo, $fuelInfo);
         $idempotencyKey = 'v' . $vehicle['id'] . '-t' . $target['wialon_msg_time'] . '-a' . $activityId;
 
+        // Persist before the direct attempt so flush and bucket share one immutable submission.
+        Outbox::enqueue(array_replace($target, [
+            'vehicle_id' => (int) $vehicle['id'], 'activity_id' => $activityId,
+            'idempotency_key' => $idempotencyKey,
+        ]), $payload);
         $result = LatraAdapter::submit($payload, $idempotencyKey);
+        if (!empty($result['deferred'])) {
+            $out['skipped']++;
+            return $out;
+        }
         LatraAdapter::recordPush(
             ['vehicle_id' => (int) $vehicle['id'], 'id' => (int) $target['id']],
             $activityId,
@@ -148,12 +157,6 @@ class BucketRunner {
         } else {
             // Retry through the outbox.
             $class = Automation::classifyFailure($result['httpCode'], $result['responseData'], $result['curlError']);
-            Outbox::enqueue(
-                $target + ['vehicle_id' => (int) $vehicle['id'], 'activity_id' => $activityId, 'idempotency_key' => $idempotencyKey],
-                $payload,
-                null,
-                0
-            );
             Database::update('message_log', [
                 'latra_status' => $class === 'permanent' ? 'failed' : 'pending',
                 'latra_response' => substr((string) ($result['curlError'] ?: $result['response']), 0, 2000),
