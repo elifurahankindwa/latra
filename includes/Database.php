@@ -8,9 +8,12 @@ class Database {
 
     public static function getInstance(): PDO {
         if (self::$instance !== null) {
+            $inTransaction = self::$instance->inTransaction();
             try {
                 self::$instance->query('SELECT 1');
             } catch (PDOException $e) {
+                // A replacement connection cannot continue the caller's atomic write.
+                if ($inTransaction) throw $e;
                 self::$instance = null;
             }
         }

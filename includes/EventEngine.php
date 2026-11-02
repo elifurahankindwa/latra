@@ -582,7 +582,12 @@ class EventEngine {
 
         // Same key IngestPipeline uses for the outbox → the fallback dedups.
         $idempotencyKey = 'v' . $vehicleId . '-t' . $msgTime . '-a' . $activityId;
+        // Explicit event producers also persist before sending, even when ingest did not queue them.
+        Outbox::enqueue(array_replace($row, ['vehicle_id' => $vehicleId,
+            'activity_id' => $activityId, 'idempotency_key' => $idempotencyKey]), $payload,
+            $row['event_id'] ?? null, 10);
         $result = LatraAdapter::submit($payload, $idempotencyKey);
+        if (!empty($result['deferred'])) return null;
         $ok = (bool) $result['ok'];
 
         if ($existing) {
@@ -590,7 +595,7 @@ class EventEngine {
                 'status'          => $ok ? 'sent' : 'failed',
                 'submitted_at'    => date(DATE_FORMAT),
                 'pushed_at'       => $ok ? date(DATE_FORMAT) : null,
-                'attempts'        => (int) $existing['attempts'] + 1,
+                'attempts'        => (int) $existing['attempts'] + (!empty($result['attempted']) ? 1 : 0),
                 'last_error'      => $ok ? null : substr((string) ($result['curlError'] ?: $result['response']), 0, 2000),
             ], 'id = ?', [(int) $existing['id']]);
             $eventRowId = (int) $existing['id'];
@@ -634,13 +639,7 @@ class EventEngine {
                 'pushed_at' => date(DATE_FORMAT),
                 'latra_response' => substr((string) $result['response'], 0, 2000),
             ], 'id = ?', [(int) $row['id']]);
-            // The ingest path already queued an outbox row for this key — retire it
-            // so a later flush does not resend what we just sent.
-            Database::query(
-                "UPDATE outbox SET status = 'sent', in_flight_at = NULL
-                 WHERE idempotency_key = ?",
-                [$idempotencyKey]
-            );
+            // Delivery finalized the matching queue row while still holding the key lock.
             self::log('sent', [
                 'vehicle' => $vehicleId, 'type' => $eventType, 'activity' => $activityId,
                 'time' => $msgTime, 'latency_ms' => $result['latency'],

@@ -19,23 +19,12 @@ $whereSql = $statusWhere ? ' WHERE ' . $statusWhere : '';
 
 if (($_GET['export'] ?? '') === 'csv') {
     require_once __DIR__ . '/includes/Export.php';
-    $rows = Database::fetchAll(
-        "SELECT pl.id, v.vehicle_reg_no, ad.activity_name, pl.http_code, pl.response_status, pl.latency_ms,
-                pl.created_at, pl.response_body
-        FROM push_log pl
-        LEFT JOIN vehicles v ON pl.vehicle_id = v.id
-        LEFT JOIN activity_definitions ad ON pl.activity_id = ad.id
-        $whereSql
-        ORDER BY pl.created_at DESC",
-        []
-    );
+    // Long exports must not hold the authenticated user's session lock.
+    session_write_close();
+    // The iterable keeps CSV memory bounded as delivery history grows.
     Export::stream('push_log_export', [
         'ID', 'Vehicle', 'Activity', 'HTTP', 'Status', 'Latency (ms)', 'Time (UTC)', 'Payload',
-    ], array_map(fn($r) => [
-        $r['id'], $r['vehicle_reg_no'] ?? '', $r['activity_name'] ?? $r['activity_id'] ?? '',
-        $r['http_code'] ?? '', $r['response_status'] === '1' ? 'Sent' : ($r['response_status'] ?? 'Pending'),
-        $r['latency_ms'] ?? '', $r['created_at'], mb_substr((string) ($r['response_body'] ?? ''), 0, 500),
-    ], $rows));
+    ], Export::pushLogRows($statusFilter));
 }
 
 $total = Database::fetch("SELECT COUNT(*) as c FROM push_log pl$whereSql")['c'] ?? 0;

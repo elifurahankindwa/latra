@@ -24,3 +24,9 @@ bruno/**/environments/local.bru
 # OS / editor noise
 .DS_Store
 *.swp
+
+# Local review documents and handoffs (never commit)
+/docs/
+
+# Dated engineering reports and evidence (local/server only)
+/reports/

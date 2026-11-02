@@ -115,41 +115,52 @@ class IngestPipeline {
                 $msgData['latra_status'] = 'rejected';
             }
 
-            if (!Automation::storeMessage($msgData)) {
-                $skipped++;
-                continue;
-            }
-            $stored = Database::fetch(
-                "SELECT * FROM message_log WHERE vehicle_id = ? AND wialon_msg_time = ?",
-                [$vehicleId, $canonical['wialon_msg_time']]
-            );
-            if (!$stored) {
-                $skipped++;
-                continue;
-            }
-            if (!$validation['valid']) {
-                GpsValidator::recordErrors($stored + $msgData, $validation['errors']);
-                $rejected++;
-                continue;
-            }
+            // Commit the source, retry body and eligible delivery intent together.
+            // Keep the transaction per message; external alerts and batch state stay outside it.
+            $pdo = Database::getInstance();
+            $pdo->beginTransaction();
+            try {
+                if (!Automation::storeMessage($msgData)) {
+                    $pdo->commit();
+                    $skipped++;
+                    continue;
+                }
+                $stored = Database::fetch(
+                    "SELECT * FROM message_log WHERE vehicle_id = ? AND wialon_msg_time = ?",
+                    [$vehicleId, $canonical['wialon_msg_time']]
+                );
+                if (!$stored) {
+                    throw new RuntimeException('Stored source message could not be loaded');
+                }
+                if (!$validation['valid']) {
+                    GpsValidator::recordErrors($stored + $msgData, $validation['errors']);
+                    $pdo->commit();
+                    $rejected++;
+                    continue;
+                }
 
-            $payload = LatraMapper::buildPayload(
-                $vehicle,
-                $stored,
-                $activityId,
-                json_decode($addonInfo, true) ?: [],
-                json_decode($fuelInfo ?: '[]', true) ?: []
-            );
-            if ($eventId) {
-                $payload['items'][0]['emergency_event_id'] = $eventId;
-            }
-            Database::update('message_log', ['latra_payload' => json_encode($payload)], 'id = ?', [$stored['id']]);
+                $payload = LatraMapper::buildPayload(
+                    $vehicle,
+                    $stored,
+                    $activityId,
+                    json_decode($addonInfo, true) ?: [],
+                    json_decode($fuelInfo ?: '[]', true) ?: []
+                );
+                if ($eventId) {
+                    $payload['items'][0]['emergency_event_id'] = $eventId;
+                }
+                Database::update('message_log', ['latra_payload' => json_encode($payload)], 'id = ?', [$stored['id']]);
 
-            // Only queue rows for enabled buckets.
-            if (Automation::isActivityAllowed($activityId) && in_array($vehicleId, Automation::enabledBucketVehicleIds(), true)) {
-                Outbox::enqueue($stored + ['activity_id' => $activityId, 'idempotency_key' => $msgData['idempotency_key']], $payload, $eventId, $eventId ? 10 : 0);
+                // Only queue rows for enabled buckets.
+                if (Automation::isActivityAllowed($activityId) && in_array($vehicleId, Automation::enabledBucketVehicleIds(), true)) {
+                    Outbox::enqueue($stored + ['activity_id' => $activityId, 'idempotency_key' => $msgData['idempotency_key']], $payload, $eventId, $eventId ? 10 : 0);
+                }
+                $pdo->commit();
+                $inserted++;
+            } catch (Throwable $e) {
+                if ($pdo->inTransaction()) $pdo->rollBack();
+                throw $e;
             }
-            $inserted++;
         }
 
         EmergencyHandler::closeEndedEvent($vehicleId, $messages);

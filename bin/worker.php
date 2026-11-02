@@ -21,6 +21,8 @@ if (function_exists('pcntl_async_signals')) {
 Schema::ensure();
 fwrite(STDOUT, "[" . date(DATE_FORMAT) . "] worker started pid=" . getmypid() . "\n");
 
+// Keep the original 15-second cadence without requiring an exact wall-clock match.
+$nextJobsAt = hrtime(true) + 15 * 1_000_000_000;
 while (true) {
     try {
         Scheduler::tickBuckets();
@@ -38,7 +40,8 @@ while (true) {
     $speed = ((int) ($active['c'] ?? 0) > 0) ? 2 : 5;
     sleep($speed);
 
-    if (time() % 15 === 0) {
+    if (hrtime(true) >= $nextJobsAt) {
+        $nextJobsAt = hrtime(true) + 15 * 1_000_000_000;
         try {
             Scheduler::tickJobs();
         } catch (Throwable $e) {
