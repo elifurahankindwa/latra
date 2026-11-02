@@ -117,6 +117,36 @@ class EmergencyHandler {
     }
 
     /**
+     * End active events that have received no buffered record for $idleSeconds.
+     *
+     * A stuck-active event keeps jobEmergencyPoll() in high-frequency mode
+     * forever, which itself generates new message_log / emergency_queue rows —
+     * a self-sustaining feedback loop. This is the safety valve that returns
+     * the fleet to normal cadence when an emergency condition genuinely ends.
+     */
+    public static function reapStale(int $idleSeconds = 900): int {
+        $idle = max(60, $idleSeconds);
+        $rows = Database::fetchAll(
+            "SELECT e.id
+               FROM emergency_events e
+               LEFT JOIN (
+                    SELECT emergency_event_id, MAX(created_at) AS mx
+                      FROM emergency_queue
+                     GROUP BY emergency_event_id
+               ) q ON q.emergency_event_id = e.id
+              WHERE e.status = 'active'
+                AND COALESCE(q.mx, e.started_at) < NOW() - INTERVAL $idle SECOND"
+        );
+        foreach ($rows as $r) {
+            self::endEvent((int) $r['id']);
+        }
+        if ($rows) {
+            Logger::info('emergency.reaped', ['count' => count($rows), 'idle_seconds' => $idle]);
+        }
+        return count($rows);
+    }
+
+    /**
      * End ALL active emergency events of a given type for a vehicle healthily.
      * Used when the triggering condition (e.g. speed) no longer applies.
      */

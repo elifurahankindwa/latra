@@ -87,47 +87,78 @@ function sendSse(array $data): void {
     flush();
 }
 
+/**
+ * Hand a leftover bulk batch to the background worker so a long SSE run can
+ * finish cleanly within the request budget. No-op (returns 0) when no worker is
+ * live — the SSE loop then simply keeps going as before.
+ */
+function handOffBackground(string $type, array $vehicleIds, int $activityId = 0): int {
+    $ids = array_values(array_filter(array_map('intval', $vehicleIds)));
+    if (!$ids || !BackgroundTasks::workerActive()) {
+        return 0;
+    }
+    try {
+        if ($type === 'wialon_fetch') {
+            BackgroundTasks::enqueue('wialon_fetch', [
+                'vehicle_ids' => $ids,
+                'from'        => time() - 86400,
+                'to'          => time(),
+                'limit'       => 100,
+            ], 3);
+        } else {
+            BackgroundTasks::enqueue('latra_push', [
+                'vehicle_ids' => $ids,
+                'activity_id' => $activityId,
+            ], 3);
+        }
+        return count($ids);
+    } catch (Throwable $e) {
+        Logger::warn('bulk.handoff_failed', ['type' => $type, 'error' => $e->getMessage()]);
+        return 0;
+    }
+}
+
 try {
     switch ($action) {
 
         case 'sync_wialon':
-            $wialon = new WialonAPI();
-            if (!$wialon->login()) {
-                throw new Exception('Wialon login failed. Check token in Settings.');
-            }
-
-            $units = $wialon->getUnits();
-            $synced = 0;
-            $updated = 0;
-
-            foreach ($units as $unit) {
-                $mapped = LatraMapper::mapVehicle($unit);
-                $exists = Database::fetch("SELECT id FROM vehicles WHERE wialon_unit_id = ?", [$mapped['wialon_unit_id']]);
-
-                if ($exists) {
-                    Database::update('vehicles', array_merge($mapped, [
-                        'last_sync_at' => date(DATE_FORMAT),
-                        'is_active' => 1
-                    ]), 'id = ?', [$exists['id']]);
-                    $updated++;
-                } else {
-                    Database::insert('vehicles', array_merge($mapped, [
-                        'created_at' => date(DATE_FORMAT),
-                        'last_sync_at' => date(DATE_FORMAT)
-                    ]));
-                    $synced++;
+            // Fleet sync is O(units) Wialon + DB round-trips. When a scheduler
+            // worker is live, queue it and return immediately so the HTTP
+            // request can never approach the gateway timeout. Without a worker
+            // (e.g. a fresh deployment with no cron yet) keep the original
+            // inline behaviour so the button still works.
+            $force = !empty($_REQUEST['force_inline']);
+            if (!$force && BackgroundTasks::workerActive()) {
+                try {
+                    $taskId = BackgroundTasks::enqueue('wialon_sync', [], 5, (int) (Auth::user()['uid'] ?? 0));
+                    echo json_encode([
+                        'success' => true,
+                        'queued'  => true,
+                        'task_id' => $taskId,
+                        'message' => 'Fleet sync queued. It will run in the background.',
+                    ]);
+                    break;
+                } catch (Throwable $e) {
+                    Logger::warn('sync.enqueue_failed', ['error' => $e->getMessage()]);
+                    // Fall through to the inline path.
                 }
-
-                $vid = $exists ? $exists['id'] : Database::getInstance()->lastInsertId();
-                Database::query(
-                    "INSERT IGNORE INTO activity_mappings (vehicle_id, activity_id, is_enabled)
-                     SELECT ?, id, 0 FROM activity_definitions",
-                    [$vid]
-                );
             }
 
-            $wialon->logout();
-            echo json_encode(['success' => true, 'message' => "Synced: $synced new, $updated updated"]);
+            $r = FleetSync::syncAll();
+            echo json_encode([
+                'success' => true,
+                'message' => "Synced: {$r['synced']} new, {$r['updated']} updated",
+            ]);
+            break;
+
+        case 'task_status':
+            // Poll the state of a background task (fleet sync, bulk fetch/push).
+            $id = intval($_REQUEST['id'] ?? 0);
+            $task = BackgroundTasks::status($id);
+            if (!$task) {
+                throw new Exception('Task not found');
+            }
+            echo json_encode(['success' => true, 'task' => $task]);
             break;
 
         case 'sync_single_vehicle':
@@ -394,6 +425,12 @@ try {
             if ($validationErrors) {
                 throw new Exception('Invalid LATRA payload: ' . implode('; ', $validationErrors));
             }
+            $expectedActivityId = (int) $msg['activity_id'];
+            foreach ($payload['items'] as $index => $item) {
+                if ((int) $item['activity_id'] !== $expectedActivityId) {
+                    throw new Exception("Payload item $index activity_id does not match the stored message activity.");
+                }
+            }
             $payloadJson = json_encode($payload, JSON_THROW_ON_ERROR);
             Database::update('message_log', ['latra_payload' => $payloadJson], 'id = ?', [$msgId]);
 
@@ -603,6 +640,11 @@ try {
             if ($validationErrors) {
                 throw new Exception('Invalid LATRA payload: ' . implode('; ', $validationErrors));
             }
+            foreach ($payload['items'] as $index => $item) {
+                if ((int) $item['activity_id'] !== $aid) {
+                    throw new Exception("Payload item $index activity_id does not match the selected activity.");
+                }
+            }
             $ch = curl_init(LATRA_API_URL);
             curl_setopt_array($ch, [
                 CURLOPT_RETURNTRANSFER => true,
@@ -729,7 +771,7 @@ $validationErrors = LatraMapper::validatePayload($payload);
         case 'bulk_fetch_messages':
             // SSE streaming: fetches messages for multiple vehicles sequentially
             $rawIds = $_GET['vehicle_ids'] ?? '';
-            $vehicleIds = array_filter(array_map('intval', explode(',', $rawIds)));
+            $vehicleIds = array_values(array_filter(array_map('intval', explode(',', $rawIds))));
             if (empty($vehicleIds)) throw new Exception('No vehicle IDs provided');
 
             // Switch to SSE mode
@@ -740,6 +782,11 @@ $validationErrors = LatraMapper::validatePayload($payload);
             $failCount = 0;
             sendSse(['type' => 'init', 'total' => $total, 'message' => 'Connected. Starting vehicle fetch...']);
 
+            // Hard wall-clock budget: the SSE request must not run long enough to
+            // be cut off by the gateway. Anything left is handed to the worker.
+            $deadline = microtime(true) + max(20, Schema::configInt('bulk_sse_max_seconds', 90));
+            $partial = false;
+
             $wialon = new WialonAPI();
             if (!$wialon->login()) {
                 sendSse(['type' => 'error', 'message' => 'Wialon login failed']);
@@ -747,6 +794,18 @@ $validationErrors = LatraMapper::validatePayload($payload);
             }
 
             foreach ($vehicleIds as $i => $vid) {
+                if (microtime(true) > $deadline) {
+                    $partial = true;
+                    $queued = handOffBackground('wialon_fetch', array_slice($vehicleIds, $i));
+                    sendSse([
+                        'type' => 'done', 'success' => $successCount, 'failed' => $failCount,
+                        'partial' => true, 'queued' => $queued,
+                        'message' => $queued
+                            ? "Time budget reached; $queued remaining vehicle(s) queued in the background."
+                            : 'Time budget reached.',
+                    ]);
+                    break;
+                }
                 $vehicle = Database::fetch("SELECT * FROM vehicles WHERE id = ?", [$vid]);
                 if (!$vehicle) {
                     sendSse([
@@ -762,16 +821,28 @@ $validationErrors = LatraMapper::validatePayload($payload);
                     $from = $to - 86400;
                     $messages = $wialon->getMessages((int)$vehicle['wialon_unit_id'], $from, $to, 100);
                     $inserted = 0;
+                    $prevState = Database::fetch("SELECT * FROM vehicle_state WHERE vehicle_id = ?", [$vid]) ?? [];
+                    $enabledActs = EventDetector::enabledActivities((int) $vid);
+                    $speedLimit = EventDetector::speedLimit((int) $vid);
 
                     foreach ($messages as $msg) {
                         $pos = $msg['pos'] ?? [];
                         $params = $msg['p'] ?? [];
-                        $activityId = LatraMapper::detectActivity($params);
-$addonCustom = [];
-                if ($activityId === EventDetector::ENGINE_OFF) {
+                        $activityId = LatraMapper::detectActivity($params, $prevState, [
+                            'speed' => (float) ($pos['s'] ?? 0),
+                            'activity_enabled' => $enabledActs,
+                            'speed_limit' => $speedLimit,
+                            'engine_param' => $vehicle['engine_param'] ?? null,
+                        ]);
+                        $ignited = EventDetector::engineState($params, $vehicle['engine_param'] ?? null);
+                        if ($ignited !== null) {
+                            $prevState['engine_status'] = $ignited ? 'on' : 'off';
+                        }
+                        $addonCustom = [];
+                        if ($activityId === EventDetector::ENGINE_OFF) {
                             $addonCustom = LatraMapper::buildTripStats($vid, (int) ($msg['t'] ?? 0));
-                }
-                $addonInfo = json_encode(LatraMapper::buildAddonInfo($activityId, $params, $addonCustom) ?? []);
+                        }
+                        $addonInfo = json_encode(LatraMapper::buildAddonInfo($activityId, $params, $addonCustom) ?? []);
                         $fuelInfo = $activityId === 16 ? json_encode(LatraMapper::buildFuelInfo($params)) : null;
                         $msgData = [
                             'vehicle_id' => $vid,
@@ -813,13 +884,15 @@ $addonCustom = [];
             }
 
             $wialon->logout();
-            sendSse(['type' => 'done', 'success' => $successCount, 'failed' => $failCount]);
+            if (!$partial) {
+                sendSse(['type' => 'done', 'success' => $successCount, 'failed' => $failCount]);
+            }
             break;
 
         case 'bulk_push_activity':
             // SSE streaming: pushes a single activity to LATRA for multiple vehicles
             $rawIds = $_GET['vehicle_ids'] ?? '';
-            $vehicleIds = array_filter(array_map('intval', explode(',', $rawIds)));
+            $vehicleIds = array_values(array_filter(array_map('intval', explode(',', $rawIds))));
             $aid = intval($_GET['activity_id'] ?? 0);
             if (empty($vehicleIds)) throw new Exception('No vehicle IDs provided');
             if (!$aid) throw new Exception('Activity ID required');
@@ -830,7 +903,25 @@ $addonCustom = [];
             $failCount = 0;
             sendSse(['type' => 'init', 'total' => $total, 'message' => 'Connected. Starting LATRA push...']);
 
+            // Hard wall-clock budget; leftover vehicles are queued in the worker
+            // (one LATRA round-trip per vehicle easily exceeds a gateway timeout
+            // on a large fleet).
+            $deadline = microtime(true) + max(20, Schema::configInt('bulk_sse_max_seconds', 90));
+            $partial = false;
+
             foreach ($vehicleIds as $i => $vid) {
+                if (microtime(true) > $deadline) {
+                    $partial = true;
+                    $queued = handOffBackground('latra_push', array_slice($vehicleIds, $i), $aid);
+                    sendSse([
+                        'type' => 'done', 'success' => $successCount, 'failed' => $failCount,
+                        'partial' => true, 'queued' => $queued,
+                        'message' => $queued
+                            ? "Time budget reached; $queued remaining vehicle(s) queued in the background."
+                            : 'Time budget reached.',
+                    ]);
+                    break;
+                }
                 $vehicle = Database::fetch("SELECT * FROM vehicles WHERE id = ?", [$vid]);
                 if (!$vehicle) {
                     sendSse([
@@ -903,7 +994,9 @@ $addonCustom = [];
                 }
             }
 
-            sendSse(['type' => 'done', 'success' => $successCount, 'failed' => $failCount]);
+            if (!$partial) {
+                sendSse(['type' => 'done', 'success' => $successCount, 'failed' => $failCount]);
+            }
             break;
 
         case 'latra_interrogate':

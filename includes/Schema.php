@@ -3,7 +3,7 @@
  * Schema setup.
  */
 class Schema {
-    public const VERSION = 9;
+    public const VERSION = 12;
 
     public static function ensure(): void {
         static $done = false;
@@ -138,6 +138,41 @@ class Schema {
             emergencies INT NOT NULL DEFAULT 0
         ) ENGINE=InnoDB");
 
+        // Background task queue: large imports/pushes run in the worker, not in
+        // the originating HTTP request (see includes/BackgroundTasks.php).
+        Database::query("CREATE TABLE IF NOT EXISTS background_tasks (
+            id BIGINT PRIMARY KEY AUTO_INCREMENT,
+            task_type VARCHAR(60) NOT NULL,
+            params JSON NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'pending',
+            priority TINYINT NOT NULL DEFAULT 0,
+            attempts INT NOT NULL DEFAULT 0,
+            max_attempts INT NOT NULL DEFAULT 3,
+            batch_token CHAR(32) NULL,
+            run_after DATETIME NULL,
+            locked_until DATETIME NULL,
+            result TEXT NULL,
+            error TEXT NULL,
+            created_by INT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            started_at DATETIME NULL,
+            finished_at DATETIME NULL,
+            INDEX idx_bg_due (status, run_after, priority),
+            INDEX idx_bg_token (batch_token)
+        ) ENGINE=InnoDB");
+
+        // Audit trail for each retention cycle (bounded by the same engine it
+        // records, so it can never itself grow without a ceiling).
+        Database::query("CREATE TABLE IF NOT EXISTS retention_log (
+            id BIGINT PRIMARY KEY AUTO_INCREMENT,
+            ran_at DATETIME NOT NULL,
+            duration_ms INT NOT NULL DEFAULT 0,
+            rows_deleted INT NOT NULL DEFAULT 0,
+            dry_run TINYINT(1) NOT NULL DEFAULT 0,
+            summary JSON NULL,
+            INDEX idx_retention_ran (ran_at)
+        ) ENGINE=InnoDB");
+
         try {
             Database::query("CREATE TABLE IF NOT EXISTS message_log_archive LIKE message_log");
         } catch (PDOException $e) {
@@ -152,6 +187,26 @@ class Schema {
         self::seedAliases();
         self::seedConfig();
 
+        // Performance indexes (schema v10+). Only touched while upgrading from
+        // an older schema, so steady-state requests pay nothing for this.
+        $prevVersion = 0;
+        try {
+            $prevVersion = (int) self::config('schema_version', '0');
+        } catch (Throwable $e) {
+            $prevVersion = 0;
+        }
+        if ($prevVersion < 12) {
+            Database::query(
+                "INSERT INTO activity_mappings (vehicle_id, activity_id, is_enabled)
+                 SELECT v.id, ?, 1 FROM vehicles v
+                 ON DUPLICATE KEY UPDATE is_enabled = 1",
+                [4]
+            );
+        }
+        if ($prevVersion < self::VERSION) {
+            self::ensureIndexes();
+        }
+
         Database::query(
             "INSERT INTO config (config_key, config_value, description) VALUES ('schema_version', ?, 'Platform schema version')
              ON DUPLICATE KEY UPDATE config_value = VALUES(config_value)",
@@ -164,7 +219,9 @@ class Schema {
             ['fleet_sync', 'Wialon fleet sync', 86400],
             ['poll_messages', 'Poll GPS messages', 180],
             ['emergency_poll', 'Emergency 1 Hz poll', 1],
+            ['emergency_reap', 'Close idle emergency events', 300],
             ['flush_outbox', 'Flush outbox to LATRA', 30],
+            ['background_tasks', 'Run queued background imports', 15],
             ['fuel_report', 'Fuel data report', 1800],
             ['offline_sweep', 'Device offline sweep', 300],
             ['backup', 'Encrypted DB backup', 86400],
@@ -223,12 +280,29 @@ class Schema {
             ['latra_rate_per_minute', '300', 'Outbound LATRA cap per minute'],
             ['latra_daily_cap', '500', 'Soft daily cap alert threshold (per vehicle)'],
             ['default_speed_limit_kmh', '80', 'Default speed limit'],
-            ['overspeed_consecutive', '2', 'Samples above limit before event'],
+            ['overspeed_consecutive', '1', 'Samples above limit before event'],
+            ['overspeed_dual_send', '1', 'Send Movement/Logging together with Speeding when the speed limit is exceeded'],
             ['battery_low_pct', '20', 'Low battery percent threshold'],
             ['battery_low_mv', '3200', 'Low battery millivolt threshold'],
             ['outbox_max_tries', '8', 'Max outbox retries'],
             ['retention_days', '90', 'Keep hot message_log this many days'],
             ['delivered_retention_hours', '24', 'Delete rows LATRA has confirmed after this many hours'],
+            ['rejected_retention_days', '30', 'Keep rejected message_log / validation_errors this many days'],
+            ['stale_pending_retention_days', '7', 'Delete pending/failed rows not queued in the outbox after this many days'],
+            ['validation_error_retention_days', '30', 'Keep validation_errors this many days'],
+            ['emergency_retention_days', '7', 'Keep ended emergency events and their buffered records this many days'],
+            ['emergency_idle_seconds', '900', 'Auto-close an emergency event idle for this many seconds'],
+            ['push_log_retention_days', '30', 'Keep LATRA push receipts this many days'],
+            ['webhook_retention_days', '14', 'Keep webhook delivery attempts this many days'],
+            ['rate_limit_retention_days', '14', 'Keep expired rate-limit buckets this many days'],
+            ['job_run_retention_days', '60', 'Keep job/automation run history this many days'],
+            ['audit_retention_days', '365', 'Keep audit_log this many days'],
+            ['ai_retention_days', '180', 'Keep AI chat history this many days'],
+            ['archive_days', '180', 'Keep archived message/push rows this many days'],
+            ['archive_hot_messages', '1', 'Move message_log older than retention_days into the archive before deleting'],
+            ['background_task_batch', '5', 'Background tasks claimed per worker tick'],
+            ['background_task_seconds', '120', 'Wall-clock budget for the background worker per tick'],
+            ['bulk_sse_max_seconds', '90', 'Hard wall-clock budget for a bulk SSE request before it hands off to the background'],
             ['webhook_url', '', 'Operator alert webhook'],
             ['latra_ip_allowlist', '', 'Comma-separated IPs for LATRA-facing API'],
             ['scheduler_enabled', '1', 'Master scheduler switch'],
@@ -260,6 +334,94 @@ class Schema {
             if (strpos($e->getMessage(), 'Duplicate column') === false) {
                 throw $e;
             }
+        }
+    }
+
+    /**
+     * Performance indexes backing the dashboard's time-window COUNT(*) queries,
+     * the map/down-equipment scans and the LATRA-facing date filters.
+     *
+     * These are what keeps a cold dashboard load fast on a large message_log:
+     * without them the date predicates are residual filters and every count
+     * walks whole per-vehicle histories. Adding a secondary index is an online
+     * InnoDB operation (LOCK=NONE), so this does not block the running app.
+     *
+     * Idempotent: an index that already exists is skipped.
+     */
+    private static function ensureIndexes(): void {
+        $indexes = [
+            'message_log' => [
+                'idx_ml_created'                => '(created_at)',
+                'idx_ml_vehicle_created'        => '(vehicle_id, created_at)',
+                'idx_ml_status_created'         => '(latra_status, created_at)',
+                'idx_ml_vehicle_status_created' => '(vehicle_id, latra_status, created_at)',
+                // Backs MAX(wialon_msg_time) per vehicle (GPS health, poll
+                // high-water mark, bucket windows) as a loose index scan.
+                'idx_ml_vehicle_time'           => '(vehicle_id, wialon_msg_time)',
+            ],
+            'push_log' => [
+                'idx_pl_vehicle_created'        => '(vehicle_id, created_at)',
+                'idx_pl_status_created'         => '(response_status, created_at)',
+                'idx_pl_vehicle_status_created' => '(vehicle_id, response_status, created_at)',
+            ],
+            'outbox' => [
+                'idx_ob_created'                => '(created_at)',
+                'idx_ob_vehicle_created'        => '(vehicle_id, created_at)',
+                'idx_ob_status_created'         => '(status, created_at)',
+                'idx_ob_vehicle_status_created' => '(vehicle_id, status, created_at)',
+            ],
+            'wialon_events' => [
+                'idx_we_created'                => '(created_at)',
+                'idx_we_vehicle_created'        => '(vehicle_id, created_at)',
+                'idx_we_status_created'         => '(status, created_at)',
+                'idx_we_vehicle_status_created' => '(vehicle_id, status, created_at)',
+            ],
+            'validation_errors' => [
+                'idx_ve_vehicle_created'        => '(vehicle_id, created_at)',
+            ],
+            'emergency_queue' => [
+                'idx_eq_event_created'          => '(emergency_event_id, created_at)',
+            ],
+            'job_runs' => [
+                'idx_jobruns_started'           => '(started_at)',
+            ],
+            'automation_runs' => [
+                'idx_ar_started'                => '(started_at)',
+            ],
+            'audit_log' => [
+                'idx_al_created'                => '(created_at)',
+            ],
+            'webhook_events' => [
+                'idx_wh_created'                => '(created_at)',
+            ],
+            'rate_limits' => [
+                'idx_rl_window'                 => '(window_start)',
+            ],
+            'vehicles' => [
+                'idx_veh_last_message_time'     => '(last_message_time)',
+                'idx_veh_lat_lng'               => '(lat, lng)',
+            ],
+        ];
+
+        foreach ($indexes as $table => $defs) {
+            foreach ($defs as $name => $cols) {
+                self::addIndex($table, $name, $cols);
+            }
+        }
+    }
+
+    private static function addIndex(string $table, string $name, string $cols): void {
+        try {
+            Database::query("ALTER TABLE `$table` ADD INDEX `$name` $cols");
+        } catch (PDOException $e) {
+            $msg = $e->getMessage();
+            // Benign: the index already exists, or the table does not exist yet
+            // (fresh install before database.sql has been imported).
+            if (stripos($msg, 'Duplicate key name') !== false
+                || stripos($msg, "doesn't exist") !== false) {
+                return;
+            }
+            error_log("schema index $table.$name: " . $msg);
         }
     }
 }

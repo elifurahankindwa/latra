@@ -52,7 +52,9 @@ CREATE TABLE IF NOT EXISTS vehicles (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_reg_no (vehicle_reg_no),
     INDEX idx_active (is_active),
-    INDEX idx_mapped (is_mapped)
+    INDEX idx_mapped (is_mapped),
+    INDEX idx_veh_last_message_time (last_message_time),
+    INDEX idx_veh_lat_lng (lat, lng)
 );
 
 -- ============================================================
@@ -148,6 +150,11 @@ CREATE TABLE IF NOT EXISTS message_log (
     INDEX idx_time (wialon_msg_time),
     INDEX idx_status (latra_status),
     INDEX idx_activity (activity_id),
+    INDEX idx_ml_created (created_at),
+    INDEX idx_ml_vehicle_created (vehicle_id, created_at),
+    INDEX idx_ml_status_created (latra_status, created_at),
+    INDEX idx_ml_vehicle_status_created (vehicle_id, latra_status, created_at),
+    INDEX idx_ml_vehicle_time (vehicle_id, wialon_msg_time),
     FOREIGN KEY (vehicle_id) REFERENCES vehicles(id) ON DELETE CASCADE
 );
 
@@ -248,6 +255,9 @@ CREATE TABLE IF NOT EXISTS push_log (
     INDEX idx_vehicle (vehicle_id),
     INDEX idx_activity (activity_id),
     INDEX idx_created (created_at),
+    INDEX idx_pl_vehicle_created (vehicle_id, created_at),
+    INDEX idx_pl_status_created (response_status, created_at),
+    INDEX idx_pl_vehicle_status_created (vehicle_id, response_status, created_at),
     FOREIGN KEY (vehicle_id) REFERENCES vehicles(id) ON DELETE CASCADE,
     FOREIGN KEY (message_log_id) REFERENCES message_log(id) ON DELETE SET NULL
 );
@@ -271,3 +281,42 @@ INSERT INTO hardware_fault_codes (code, description) VALUES
 (7, 'Reserved'),
 (8, 'Reserved'),
 (9, 'Reserved');
+
+-- ============================================================
+-- DATA LIFECYCLE (schema v11)
+-- ============================================================
+-- Remaining lifecycle tables (jobs, job_runs, outbox, validation_errors,
+-- emergency_queue/events, wialon_events, rate_limits, archives, ...) are
+-- created at runtime by Schema::ensure(). These two are listed here so a fresh
+-- install has the full retention/background schema up front. Their indexes,
+-- config windows and jobs are also applied by Schema::ensure() / migration 009.
+CREATE TABLE IF NOT EXISTS background_tasks (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    task_type VARCHAR(60) NOT NULL,
+    params JSON NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    priority TINYINT NOT NULL DEFAULT 0,
+    attempts INT NOT NULL DEFAULT 0,
+    max_attempts INT NOT NULL DEFAULT 3,
+    batch_token CHAR(32) NULL,
+    run_after DATETIME NULL,
+    locked_until DATETIME NULL,
+    result TEXT NULL,
+    error TEXT NULL,
+    created_by INT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    started_at DATETIME NULL,
+    finished_at DATETIME NULL,
+    INDEX idx_bg_due (status, run_after, priority),
+    INDEX idx_bg_token (batch_token)
+);
+
+CREATE TABLE IF NOT EXISTS retention_log (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    ran_at DATETIME NOT NULL,
+    duration_ms INT NOT NULL DEFAULT 0,
+    rows_deleted INT NOT NULL DEFAULT 0,
+    dry_run TINYINT(1) NOT NULL DEFAULT 0,
+    summary JSON NULL,
+    INDEX idx_retention_ran (ran_at)
+);

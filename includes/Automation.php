@@ -121,7 +121,7 @@ class Automation {
         Database::query("CREATE TABLE IF NOT EXISTS overspeed_config (
             id INT PRIMARY KEY AUTO_INCREMENT,
             vehicle_id INT NULL,
-            speed_limit_kmh DECIMAL(6,2) NOT NULL DEFAULT 80.00,
+            speed_limit_kmh DECIMAL(6,2) NOT NULL DEFAULT 20.00,
             duration_seconds INT NOT NULL DEFAULT 5,
             is_enabled TINYINT(1) NOT NULL DEFAULT 1,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

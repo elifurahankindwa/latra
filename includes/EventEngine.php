@@ -389,6 +389,10 @@ class EventEngine {
         if (empty($allowed)) {
             $allowed = array_values(array_diff(range(1, 24), [EventDetector::MOVEMENT]));
         }
+        $allowed = array_map('intval', $allowed);
+        $speedLimit = !empty($vehicle['speed_limit_kmh'])
+            ? (float) $vehicle['speed_limit_kmh']
+            : EventDetector::speedLimit($vehicleId);
 
         // Oldest → newest so events are processed in occurrence order.
         $ordered = $messages;
@@ -438,6 +442,22 @@ class EventEngine {
             }
 
             $activityId = (int) $row['activity_id'];
+            $eventType = self::typeForActivity($activityId);
+            $speedKnown = $row['speed'] !== null && is_numeric($row['speed']);
+            $speed = $speedKnown ? (float) $row['speed'] : 0;
+            $overspeedActive = $speedKnown && $speed > 0 && $speed > $speedLimit;
+            $speedingState = self::loadChannelState($vehicleId, 'overspeed');
+            $speedingWasActive = ($speedingState['state'] ?? null) === 'active';
+            $speedingOccurrence = $activityId === EventDetector::SPEEDING && !$speedingWasActive;
+            // Keep unknown-speed messages from clearing an active speeding episode.
+            if ($overspeedActive || $activityId === EventDetector::SPEEDING) {
+                if (!$speedingWasActive) {
+                    self::saveChannelState($vehicleId, 'overspeed', 'active', 'speeding', $t);
+                }
+            } elseif ($speedKnown && $speedingWasActive) {
+                self::saveChannelState($vehicleId, 'overspeed', 'clear', null, $t);
+            }
+
             // Movement stays on the bucket interval path — never here.
             if ($activityId === EventDetector::MOVEMENT) {
                 $stats['skipped_movement']++;
@@ -447,7 +467,6 @@ class EventEngine {
                 continue;
             }
 
-            $eventType = self::typeForActivity($activityId);
             $dup = Database::fetch(
                 "SELECT id, status FROM wialon_events WHERE vehicle_id = ? AND event_type = ? AND wialon_msg_time = ?",
                 [$vehicleId, $eventType, $t]
@@ -461,7 +480,12 @@ class EventEngine {
             $sym = self::SYMMETRIC[$eventType] ?? null;
             $alarmCh = self::alarmChannelFor($eventType);
 
-            if ($sym !== null) {
+            if ($eventType === 'speeding') {
+                if (!$speedingOccurrence) {
+                    $stats['suppressed']++;
+                    continue;
+                }
+            } elseif ($sym !== null) {
                 $chState = self::loadChannelState($vehicleId, $sym['channel']);
                 // Same group as the last push → same condition still ongoing.
                 if (($chState['state'] ?? null) === $sym['state']) {
@@ -567,6 +591,14 @@ class EventEngine {
         $fuelInfo = $activityId === 16 ? LatraMapper::buildFuelInfo($params) : [];
 
         $payload = json_decode($row['latra_payload'] ?? '', true) ?: [];
+        $payloadActivityId = (int) ($payload['items'][0]['activity_id'] ?? 0);
+        if ($payload && $payloadActivityId !== $activityId) {
+            $emergencyEventId = $payload['items'][0]['emergency_event_id'] ?? null;
+            $payload = LatraMapper::buildPayload($vehicle, $row, $activityId, $addonInfo, $fuelInfo);
+            if ($emergencyEventId !== null && $emergencyEventId !== '') {
+                $payload['items'][0]['emergency_event_id'] = $emergencyEventId;
+            }
+        }
         if (!$payload && $row['lat'] !== null && $row['lng'] !== null) {
             $payload = LatraMapper::buildPayload($vehicle, $row, $activityId, $addonInfo, $fuelInfo);
         }

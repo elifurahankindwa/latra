@@ -29,6 +29,13 @@ class Outbox {
         $extra = $emergencyOnly ? ' AND event_id IS NOT NULL AND event_id != \'\'' : '';
         // Only claim rows for enabled buckets.
         $allowed = Automation::enabledBucketActivities();
+        if (Schema::config('scheduler_enabled', '1') === '1'
+            && Schema::config('event_engine_enabled', '1') === '1') {
+            $allowed = array_values(array_unique(array_merge(
+                $allowed,
+                range(2, 24)
+            )));
+        }
         if (empty($allowed)) {
             return [];
         }

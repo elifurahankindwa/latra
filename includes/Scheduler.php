@@ -62,7 +62,7 @@ class Scheduler {
 
         $jobs = Database::fetchAll(
             "SELECT * FROM jobs WHERE is_enabled = 1 AND (next_run_at IS NULL OR next_run_at <= NOW())
-             ORDER BY FIELD(job_key, 'reconcile','emergency_poll','flush_outbox','poll_messages','offline_sweep','purge_delivered','fleet_sync','backup','retention','audit_rollup')"
+             ORDER BY FIELD(job_key, 'reconcile','emergency_poll','emergency_reap','flush_outbox','background_tasks','poll_messages','offline_sweep','purge_delivered','fleet_sync','backup','retention','audit_rollup')"
         );
         foreach ($jobs as $job) {
             $key = $job['job_key'];
@@ -128,6 +128,8 @@ class Scheduler {
             'fuel_report' => self::jobFuelReport(),
             'poll_messages' => self::jobPoll(),
             'emergency_poll' => self::jobEmergencyPoll(),
+            'emergency_reap' => self::jobEmergencyReap(),
+            'background_tasks' => self::jobBackgroundTasks(),
             'flush_outbox' => self::jobFlush(false),
             'offline_sweep' => self::jobOffline(),
             'backup' => self::jobBackup(),
@@ -173,20 +175,24 @@ class Scheduler {
         foreach ($bucketVehicles as $bv) {
             $skip[(int) $bv['vehicle_id']] = true;
         }
-        $items = 0;
-        $window = Schema::configInt('poll_interval_seconds', 180);
+        // Vehicles handled by an active emergency or an enabled bucket are
+        // polled elsewhere; everything else is polled here in one Wialon
+        // session (previously one login/logout per vehicle).
+        $targets = [];
         foreach ($vehicles as $v) {
             if (isset($skip[(int) $v['id']])) {
                 continue;
             }
-            try {
-                $r = FleetSync::pollVehicle($v, $window, 80);
-                $items += $r['inserted'] + $r['rejected'];
-            } catch (Throwable $e) {
-                Logger::warn('poll.vehicle_failed', ['vehicle' => $v['id'], 'error' => $e->getMessage()]);
-            }
+            $targets[] = $v;
         }
-        return $items;
+        if (!$targets) {
+            return 0;
+        }
+        $window = Schema::configInt('poll_interval_seconds', 180);
+        // Soft budget so a slow Wialon API can never pin the scheduler past a
+        // single tick.
+        $r = FleetSync::pollMany($targets, $window, 80, 0, 240);
+        return (int) ($r['inserted'] + $r['rejected']);
     }
 
     private static function jobEmergencyPoll(): int {
@@ -194,21 +200,42 @@ class Scheduler {
         if (!$events) {
             return 0;
         }
-        $items = 0;
+        $vehicles = [];
         foreach ($events as $e) {
             $v = Database::fetch("SELECT * FROM vehicles WHERE id = ?", [$e['vehicle_id']]);
-            if (!$v) {
-                continue;
+            if ($v) {
+                $vehicles[] = $v;
             }
-            try {
-                $r = FleetSync::pollVehicle($v, 5, 20);
-                $items += $r['inserted'];
-            } catch (Throwable $ex) {
-                Logger::warn('emergency.poll_failed', ['vehicle' => $v['id']]);
-            }
+        }
+        $items = 0;
+        // One Wialon session for all active emergencies, capped so the emergency
+        // cadence cannot starve the rest of the tick.
+        if ($vehicles) {
+            $r = FleetSync::pollMany($vehicles, 5, 20, 0, 90);
+            $items += (int) $r['inserted'];
         }
         $items += self::jobFlush(true);
         return $items;
+    }
+
+    /**
+     * End emergency events that have gone quiet. Without this, a stuck-active
+     * event keeps jobEmergencyPoll() polling its vehicle forever.
+     */
+    private static function jobEmergencyReap(): int {
+        $idle = Schema::configInt('emergency_idle_seconds', 900);
+        return EmergencyHandler::reapStale($idle);
+    }
+
+    /**
+     * Execute queued background imports/pushes outside of any HTTP request.
+     */
+    private static function jobBackgroundTasks(): int {
+        $r = BackgroundTasks::runDue(
+            max(1, Schema::configInt('background_task_batch', 5)),
+            max(15, Schema::configInt('background_task_seconds', 120))
+        );
+        return (int) ($r['done'] + $r['failed']);
     }
 
     /**
@@ -234,12 +261,17 @@ class Scheduler {
                 break;
             }
 
-            $payload = self::rebuildPayloadForFlush($row);
+            $rebuilt = self::rebuildPayloadForFlush($row);
+            $payload = $rebuilt['payload'];
             $result = LatraAdapter::submit($payload, $row['idempotency_key']);
+            // The source message may already have been purged by retention
+            // (push_log.message_log_id is a foreign key). Record the receipt
+            // without the reference instead of failing the whole batch.
+            $messageId = !empty($rebuilt['message_exists']) ? (int) $row['message_id'] : null;
             $msg = [
                 'vehicle_id' => $row['vehicle_id'],
-                'id' => $row['message_id'],
-                'message_id' => $row['message_id'],
+                'id' => $messageId,
+                'message_id' => $messageId,
             ];
             LatraAdapter::recordPush($msg, (int) $row['activity_id'], $result, (string) $row['id'], (int) $row['tries'] + 1);
             if (!empty($result['skipped'])) {
@@ -297,8 +329,18 @@ class Scheduler {
         return $ok + $fail + $skipped + $released;
     }
 
+    /**
+     * Rebuild the LATRA payload for an outbox row.
+     *
+     * The stored outbox payload is used as the fallback: it stays valid even
+     * after the source message has been purged by retention, so a queued
+     * activity record is never lost.
+     *
+     * @return array{payload:array,message_exists:bool}
+     */
     private static function rebuildPayloadForFlush(array $row): array {
         $stored = json_decode($row['payload'] ?? '[]', true) ?: [];
+        $exists = false;
 
         try {
             $msg = Database::fetch(
@@ -309,13 +351,14 @@ class Scheduler {
                 [$row['message_id']]
             );
             if ($msg) {
+                $exists = true;
                 $fresh = LatraMapper::buildPayload(
                     $msg, $msg, (int) $row['activity_id'],
                     json_decode($msg['addon_info'] ?? '[]', true) ?: [],
                     json_decode($msg['fuel_info'] ?? '[]', true) ?: []
                 );
                 if (!empty($fresh['items'])) {
-                    return $fresh;
+                    return ['payload' => $fresh, 'message_exists' => true];
                 }
             }
         } catch (\Throwable $e) {
@@ -325,7 +368,7 @@ class Scheduler {
                 'error'     => $e->getMessage(),
             ]);
         }
-        return $stored;
+        return ['payload' => $stored, 'message_exists' => $exists];
     }
 
     private static function jobFuelReport(): int {
@@ -418,34 +461,32 @@ class Scheduler {
         return 1;
     }
 
+    /**
+     * Delegate the whole retention policy to the chunked engine.
+     *
+     * The old implementation ran two unbounded statements
+     * (`INSERT ... SELECT` + `DELETE` over the entire age-out set) and only
+     * handled message_log, which meant activity-1 / rejected rows and every
+     * other ingest table grew without a ceiling. Retention::runAll() is
+     * batched, time-budgeted, idempotent and covers emergency_queue,
+     * validation_errors, archives and the operational history tables.
+     */
     private static function jobRetention(): int {
-        $days = Schema::configInt('retention_days', 90);
-        $moved = 0;
-        try {
-            Database::query(
-                "INSERT INTO message_log_archive SELECT * FROM message_log WHERE created_at < NOW() - INTERVAL ? DAY",
-                [$days]
-            );
-            $stmt = Database::query(
-                "DELETE FROM message_log WHERE created_at < NOW() - INTERVAL ? DAY",
-                [$days]
-            );
-            $moved += $stmt->rowCount();
-        } catch (Throwable $e) {
-            Logger::warn('retention.messages', ['error' => $e->getMessage()]);
+        $days = max(1, Schema::configInt('retention_days', 90));
+        $summary = Retention::runAll();
+        $rows = 0;
+        foreach ($summary as $step) {
+            $rows += (int) ($step['rows'] ?? 0);
         }
 
-        // Rows already accepted by LATRA are dead weight: drop them once they
-        // age out of the operational window so the hot tables stay small.
-        $moved += self::purgeDelivered();
-
+        // Rotate the file logs on the same window.
         $logFiles = glob(LOGS_DIR . '/*.log') ?: [];
         foreach ($logFiles as $f) {
             if (filemtime($f) < time() - ($days * 86400)) {
                 @unlink($f);
             }
         }
-        return $moved;
+        return $rows;
     }
 
     /**
@@ -475,10 +516,19 @@ class Scheduler {
                AND updated_at < NOW() - INTERVAL $hours HOUR
              LIMIT 2000",
             // Source messages that were pushed through successfully.
+            // A message is only removed once every activity record queued for
+            // it has been delivered: one fix can carry both the overspeed
+            // (activity 4) and the movement (activity 1) row, and the message
+            // row must outlive the row that is still in the outbox.
             "DELETE FROM message_log
              WHERE latra_status = 'sent'
                AND pushed_at IS NOT NULL
                AND pushed_at < NOW() - INTERVAL $hours HOUR
+               AND NOT EXISTS (
+                   SELECT 1 FROM outbox o
+                    WHERE o.message_id = message_log.id
+                      AND o.status IN ('pending','in_flight','failed')
+               )
              LIMIT 2000",
         ];
 
@@ -504,15 +554,22 @@ class Scheduler {
     }
 
     private static function jobRollup(): int {
+        // Range predicates (col >= CURDATE() AND col < CURDATE() + 1 day) are
+        // index-friendly; DATE(col) = CURDATE() forced a full scan on every run.
         Database::query(
             "INSERT INTO kpi_daily (day, vehicles, messages, sent, failed, rejected, emergencies)
              SELECT CURDATE(),
                 (SELECT COUNT(*) FROM vehicles),
-                (SELECT COUNT(*) FROM message_log WHERE DATE(created_at) = CURDATE()),
-                (SELECT COUNT(*) FROM outbox WHERE status = 'sent' AND DATE(updated_at) = CURDATE()),
-                (SELECT COUNT(*) FROM outbox WHERE status = 'failed' AND DATE(updated_at) = CURDATE()),
-                (SELECT COUNT(*) FROM message_log WHERE latra_status = 'rejected' AND DATE(created_at) = CURDATE()),
-                (SELECT COUNT(*) FROM emergency_events WHERE DATE(started_at) = CURDATE())
+                (SELECT COUNT(*) FROM message_log
+                  WHERE created_at >= CURDATE() AND created_at < CURDATE() + INTERVAL 1 DAY),
+                (SELECT COUNT(*) FROM outbox
+                  WHERE status = 'sent' AND updated_at >= CURDATE() AND updated_at < CURDATE() + INTERVAL 1 DAY),
+                (SELECT COUNT(*) FROM outbox
+                  WHERE status = 'failed' AND updated_at >= CURDATE() AND updated_at < CURDATE() + INTERVAL 1 DAY),
+                (SELECT COUNT(*) FROM message_log
+                  WHERE latra_status = 'rejected' AND created_at >= CURDATE() AND created_at < CURDATE() + INTERVAL 1 DAY),
+                (SELECT COUNT(*) FROM emergency_events
+                  WHERE started_at >= CURDATE() AND started_at < CURDATE() + INTERVAL 1 DAY)
              ON DUPLICATE KEY UPDATE
                 vehicles = VALUES(vehicles), messages = VALUES(messages), sent = VALUES(sent),
                 failed = VALUES(failed), rejected = VALUES(rejected), emergencies = VALUES(emergencies)"

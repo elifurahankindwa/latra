@@ -190,6 +190,15 @@ class EventDetector {
     }
 
     /**
+     * Is the horizontal speed known and above the configured limit?
+     * A stationary vehicle (speed 0) is never an overspeed, and an unknown
+     * speed is never treated as one.
+     */
+    public static function isOverspeed(?float $speed, float $limit): bool {
+        return $speed !== null && $speed > 0 && $speed > $limit;
+    }
+
+    /**
      * Determine current speed limit for a vehicle (config or global default).
      */
     public static function speedLimit(int $vehicleId): float {

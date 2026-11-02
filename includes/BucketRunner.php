@@ -115,41 +115,66 @@ class BucketRunner {
             return $out;
         }
 
-        // Build payload with the BUCKET's activity_id (overrides detected activity).
-        // This matches how push_log.php's generate_payload works.
+        // Send the activity that was actually DETECTED for this message, not the
+        // bucket's own activity_id. The bucket governs polling cadence only: a
+        // speeding/panic/engine message ingested while the movement bucket polls
+        // must reach LATRA under its real activity (IDD: activity 1 is the
+        // "Movement/Logging (Default)" catch-all, so stamping every message with
+        // the bucket id silently reclassified all exceptions as movement).
+        // Fall back to the bucket activity when the stored activity is unset.
+        $detectedActivity = (int) ($target['activity_id'] ?? 0);
+        $primaryActivity = $detectedActivity > 0 ? $detectedActivity : $activityId;
+
+        // Movement/Logging (1) is the baseline record and Speeding (4) is
+        // prepared on top of it whenever the horizontal speed exceeds the limit,
+        // so both records are submitted to LATRA for the same fix.
+        $speed = ($target['speed'] !== null && is_numeric($target['speed']))
+            ? (float) $target['speed']
+            : null;
+        $activities = LatraMapper::activitiesForFix(
+            $primaryActivity,
+            $speed,
+            IngestPipeline::speedLimit($vehicle)
+        );
+
         $params = json_decode($target['raw_data'] ?? '{}', true);
         $params = is_array($params) && isset($params['p']) && is_array($params['p']) ? $params['p'] : [];
-        $addonInfo = LatraMapper::buildAddonInfo($activityId, $params) ?? [];
-        $fuelInfo = $activityId === 16 ? LatraMapper::buildFuelInfo($params) : [];
-        $payload = LatraMapper::buildPayload($vehicle, $target, $activityId, $addonInfo, $fuelInfo);
-        $idempotencyKey = 'v' . $vehicle['id'] . '-t' . $target['wialon_msg_time'] . '-a' . $activityId;
 
-        $result = LatraAdapter::submit($payload, $idempotencyKey);
-        LatraAdapter::recordPush(
-            ['vehicle_id' => (int) $vehicle['id'], 'id' => (int) $target['id']],
-            $activityId,
-            $result,
-            '',
-            1
-        );
-        if (!empty($result['skipped'])) {
-            self::markPushed((int) $vehicle['id'], $latestMsgTime);
-            $out['skipped']++;
-            return $out;
-        }
-        if ($result['ok']) {
-            Database::update('message_log', [
-                'latra_status' => 'sent',
-                'pushed_at' => date(DATE_FORMAT),
-                'latra_response' => substr((string) $result['response'], 0, 2000),
-            ], 'id = ?', [(int) $target['id']]);
-            self::markPushed((int) $vehicle['id'], $latestMsgTime);
-            $out['pushed']++;
-        } else {
+        foreach ($activities as $sendActivity) {
+            $addonInfo = LatraMapper::buildAddonInfo($sendActivity, $params) ?? [];
+            $fuelInfo = $sendActivity === 16 ? LatraMapper::buildFuelInfo($params) : [];
+            $payload = LatraMapper::buildPayload($vehicle, $target, $sendActivity, $addonInfo, $fuelInfo);
+            $idempotencyKey = 'v' . $vehicle['id'] . '-t' . $target['wialon_msg_time'] . '-a' . $sendActivity;
+
+            $result = LatraAdapter::submit($payload, $idempotencyKey);
+            LatraAdapter::recordPush(
+                ['vehicle_id' => (int) $vehicle['id'], 'id' => (int) $target['id']],
+                $sendActivity,
+                $result,
+                '',
+                1
+            );
+            if (!empty($result['skipped'])) {
+                $out['skipped']++;
+                continue;
+            }
+            if ($result['ok']) {
+                Database::update('message_log', [
+                    'latra_status' => 'sent',
+                    'pushed_at' => date(DATE_FORMAT),
+                    'latra_response' => substr((string) $result['response'], 0, 2000),
+                ], 'id = ?', [(int) $target['id']]);
+                $out['pushed']++;
+                continue;
+            }
             // Retry through the outbox.
             $class = Automation::classifyFailure($result['httpCode'], $result['responseData'], $result['curlError']);
             Outbox::enqueue(
-                $target + ['vehicle_id' => (int) $vehicle['id'], 'activity_id' => $activityId, 'idempotency_key' => $idempotencyKey],
+                array_merge($target, [
+                    'vehicle_id' => (int) $vehicle['id'],
+                    'activity_id' => $sendActivity,
+                    'idempotency_key' => $idempotencyKey,
+                ]),
                 $payload,
                 null,
                 0
@@ -160,6 +185,8 @@ class BucketRunner {
             ], 'id = ?', [(int) $target['id']]);
             $out['failed']++;
         }
+
+        self::markPushed((int) $vehicle['id'], $latestMsgTime);
 
         return $out;
     }

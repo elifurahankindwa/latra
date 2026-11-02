@@ -91,6 +91,39 @@ Layout::renderHead('System Health');
     <?= healthRow('Free space', number_format($free / (1024 ** 3), 1) . ' GB', 'ok') ?>
     </tbody></table></div></div>
 
+<div class="card"><div class="card-header"><h3><i data-lucide="archive"></i> Data Lifecycle</h3></div><div class="table-responsive"><table class="data-table">
+    <thead><tr><th>Check</th><th>Value</th><th></th></tr></thead><tbody>
+    <?php
+    try {
+        $bgDepth = BackgroundTasks::depth();
+        $activeEmergency = (int) (Database::fetch("SELECT COUNT(*) AS c FROM emergency_events WHERE status = 'active'")['c'] ?? 0);
+        $eqDepth = (int) (Database::fetch("SELECT COUNT(*) AS c FROM emergency_queue")['c'] ?? 0);
+        $lastRet = Database::fetch("SELECT * FROM retention_log WHERE dry_run = 0 ORDER BY id DESC LIMIT 1");
+        $big = Database::fetchAll("SELECT TABLE_NAME, ROUND((DATA_LENGTH + INDEX_LENGTH) / 1048576, 1) AS mb
+                                     FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()
+                                    ORDER BY (DATA_LENGTH + INDEX_LENGTH) DESC LIMIT 5");
+        echo healthRow('Background task queue', 'pending ' . $bgDepth['pending'] . ' / running ' . $bgDepth['running'] . ' / failed ' . $bgDepth['failed'], $bgDepth['failed'] > 0 ? 'warn' : 'ok');
+        echo healthRow('Active emergency events', $activeEmergency . ' active', $activeEmergency > 0 ? 'warn' : 'ok');
+        echo healthRow('Emergency buffer rows', number_format($eqDepth), $eqDepth > 5000 ? 'warn' : 'ok');
+        echo healthRow('Retention windows',
+            'hot ' . Schema::configInt('retention_days', 90) . 'd · delivered ' . Schema::configInt('delivered_retention_hours', 24) . 'h · stale ' . Schema::configInt('stale_pending_retention_days', 7) . 'd · emergency ' . Schema::configInt('emergency_retention_days', 7) . 'd · archive ' . Schema::configInt('archive_days', 180) . 'd',
+            'ok');
+        echo healthRow('Last retention run',
+            $lastRet
+                ? htmlspecialchars(toDisplay((string) $lastRet['ran_at'])) . ' · ' . number_format((int) $lastRet['rows_deleted']) . ' rows in ' . (int) $lastRet['duration_ms'] . 'ms' . ($lastRet['dry_run'] ? ' <span class="badge badge-secondary">dry-run</span>' : '')
+                : 'never',
+            $lastRet ? 'ok' : 'warn');
+        $sizes = [];
+        foreach ($big as $t) {
+            $sizes[] = htmlspecialchars($t['TABLE_NAME']) . ' <span class="text-muted">' . $t['mb'] . 'MB</span>';
+        }
+        echo healthRow('Largest tables', implode(' · ', $sizes), 'ok');
+    } catch (Throwable $e) {
+        echo healthRow('Data lifecycle', 'unavailable: ' . htmlspecialchars($e->getMessage()), 'warn');
+    }
+    ?>
+    </tbody></table></div></div>
+
 <div class="card"><div class="card-header"><h3><i data-lucide="history"></i> Recent Scheduler Runs</h3></div><div class="table-responsive"><table class="data-table">
     <thead><tr><th>Started</th><th>Bucket</th><th>Trigger</th><th>Status</th><th>Counts</th><th>Duration</th></tr></thead><tbody>
     <?php foreach (Database::fetchAll('SELECT * FROM automation_runs ORDER BY id DESC LIMIT 10') as $run): ?>

@@ -16,6 +16,31 @@ function apiJson(action, params = {}) {
     return apiForm(action, params).then(r => r.json());
 }
 
+// Poll a background task (see BackgroundTasks) until it finishes. Resolves with
+// the final task row, or a {timeout:true} row if it is still running at the
+// deadline. Used when a heavy operation was handed to the worker.
+function pollBackgroundTask(taskId, { timeoutMs = 300000, intervalMs = 2500, onTick = null } = {}) {
+    const started = Date.now();
+    return new Promise((resolve, reject) => {
+        const tick = () => {
+            apiJson('task_status', { id: taskId }).then(res => {
+                if (!res || res.success === false || !res.task) {
+                    return reject(new Error((res && res.error) || 'Task status unavailable'));
+                }
+                const t = res.task;
+                if (typeof onTick === 'function') onTick(t);
+                if (t.status === 'done') return resolve(t);
+                if (t.status === 'failed') return reject(new Error(t.error || 'Task failed'));
+                if (Date.now() - started > timeoutMs) {
+                    return resolve(Object.assign({}, t, { timeout: true }));
+                }
+                setTimeout(tick, intervalMs);
+            }).catch(reject);
+        };
+        tick();
+    });
+}
+
 function sseUrl(action, params = {}) {
     const q = new URLSearchParams(Object.assign({ action, _csrf: getCsrfToken() }, params));
     return 'api.php?' + q.toString();
@@ -280,7 +305,19 @@ function syncWialon(event) {
 
         simulatedProgress(
             'Syncing from Wialon',
-            apiJson('sync_wialon'),
+            apiJson('sync_wialon').then(data => {
+                // The server may hand a large fleet sync to the background
+                // worker; poll it to completion so the modal reflects reality.
+                if (data && data.queued && data.task_id) {
+                    return pollBackgroundTask(data.task_id).then(t => {
+                        if (t.timeout) {
+                            return { success: true, message: 'Fleet sync is still running in the background; it will finish shortly.' };
+                        }
+                        return { success: true, message: 'Fleet sync completed in the background.' };
+                    });
+                }
+                return data;
+            }),
             { subtitle: 'Fetching all vehicle units...', icon: 'rotate-cw' }
         ).then(data => {
             if (data.success !== false) {

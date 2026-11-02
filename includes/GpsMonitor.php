@@ -12,23 +12,28 @@ class GpsMonitor {
 
     // Refresh GPS health for active vehicles.
     public static function refresh(): array {
-        $vehicles = Database::fetchAll(
-            "SELECT id FROM vehicles WHERE is_active = 1"
-        );
         $now = time();
         $counts = ['ok' => 0, 'stale' => 0, 'offline' => 0, 'unknown' => 0];
 
-        foreach ($vehicles as $veh) {
-            $row = Database::fetch(
-                "SELECT MAX(wialon_msg_time) AS t FROM message_log WHERE vehicle_id = ?",
-                [$veh['id']]
-            );
-            $lastGps = $row ? (int)($row['t'] ?? 0) : null;
+        // One grouped query instead of a MAX() round-trip per vehicle (was N+1
+        // across the whole fleet). Uses idx_ml_vehicle_time for the per-vehicle
+        // high-water mark.
+        $rows = Database::fetchAll(
+            "SELECT v.id AS vehicle_id, MAX(ml.wialon_msg_time) AS t
+               FROM vehicles v
+               LEFT JOIN message_log ml ON ml.vehicle_id = v.id
+              WHERE v.is_active = 1
+              GROUP BY v.id"
+        );
+
+        $batch = [];
+        foreach ($rows as $veh) {
+            $lastGps = $veh['t'] !== null ? (int) $veh['t'] : null;
 
             $status = 'unknown';
             $mins = null;
             if ($lastGps) {
-                $mins = (int)floor(($now - $lastGps) / 60);
+                $mins = (int) floor(($now - $lastGps) / 60);
                 if (($now - $lastGps) <= self::MAX_INTERVAL_SECONDS) {
                     $status = 'ok';
                 } elseif (($now - $lastGps) <= self::OFFLINE_SECONDS) {
@@ -39,27 +44,76 @@ class GpsMonitor {
             }
 
             $counts[$status]++;
-            self::upsert($veh['id'], $lastGps, $now, $status, $mins);
+            $batch[] = [
+                (int) $veh['vehicle_id'],
+                $lastGps,
+                $lastGps !== null ? date(DATE_FORMAT, $lastGps) : null,
+                $now,
+                $status,
+                $mins,
+            ];
         }
 
+        self::upsertBatch($batch);
         return $counts;
     }
 
-    // Save GPS health for one vehicle.
-    public static function upsert(int $vehicleId, ?int $lastGps, int $commTime, string $status, ?int $mins): void {
-        $exists = Database::fetch("SELECT vehicle_id FROM gps_health WHERE vehicle_id = ?", [$vehicleId]);
-        $data = [
-            'last_gps_time' => $lastGps !== null ? $lastGps : null,
-            'last_gps_at'   => $lastGps !== null ? date(DATE_FORMAT, $lastGps) : null,
-            'last_comm_time'=> $commTime,
-            'status'        => $status,
-            'minutes_since' => $mins,
-        ];
-        if ($exists) {
-            Database::update('gps_health', $data, 'vehicle_id = ?', [$vehicleId]);
-        } else {
-            Database::insert('gps_health', array_merge(['vehicle_id' => $vehicleId], $data));
+    /**
+     * Upsert many gps_health rows in one (chunked) statement.
+     *
+     * One INSERT per vehicle meant one auto-commit per row, which dominated the
+     * whole refresh on a large fleet; a multi-row upsert collapses that to a
+     * single round-trip.
+     */
+    public static function upsertBatch(array $rows): void {
+        if (!$rows) {
+            return;
         }
+        // 500 rows × 6 small columns stays well under max_allowed_packet.
+        foreach (array_chunk($rows, 500) as $chunk) {
+            $placeholders = implode(',', array_fill(0, count($chunk), '(?,?,?,?,?,?)'));
+            $params = [];
+            foreach ($chunk as $r) {
+                foreach ($r as $v) {
+                    $params[] = $v;
+                }
+            }
+            Database::query(
+                "INSERT INTO gps_health
+                    (vehicle_id, last_gps_time, last_gps_at, last_comm_time, status, minutes_since)
+                 VALUES $placeholders
+                 ON DUPLICATE KEY UPDATE
+                    last_gps_time = VALUES(last_gps_time),
+                    last_gps_at   = VALUES(last_gps_at),
+                    last_comm_time= VALUES(last_comm_time),
+                    status        = VALUES(status),
+                    minutes_since = VALUES(minutes_since)",
+                $params
+            );
+        }
+    }
+
+    // Save GPS health for one vehicle (single atomic upsert).
+    public static function upsert(int $vehicleId, ?int $lastGps, int $commTime, string $status, ?int $mins): void {
+        Database::query(
+            "INSERT INTO gps_health
+                (vehicle_id, last_gps_time, last_gps_at, last_comm_time, status, minutes_since)
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE
+                last_gps_time = VALUES(last_gps_time),
+                last_gps_at   = VALUES(last_gps_at),
+                last_comm_time= VALUES(last_comm_time),
+                status        = VALUES(status),
+                minutes_since = VALUES(minutes_since)",
+            [
+                $vehicleId,
+                $lastGps,
+                $lastGps !== null ? date(DATE_FORMAT, $lastGps) : null,
+                $commTime,
+                $status,
+                $mins,
+            ]
+        );
     }
 
     // Count vehicles with fresh GPS.

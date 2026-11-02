@@ -4,6 +4,9 @@
  */
 class LatraMapper {
 
+    /** LATRA reads MGS_ID as a signed 32-bit integer. */
+    private const MAX_MGS_ID = 2147483647;
+
     /** Named activity constants (mirror ACTIVITIES). */
     const ACTIVITY_MOVEMENT        = 1;
     const ACTIVITY_ENGINE_ON       = 2;
@@ -126,6 +129,7 @@ class LatraMapper {
             'longitude'          => self::fmt($message['lng'] ?? $vehicle['lng'] ?? null, 'string'),
             'altitude'           => self::fmt($message['altitude'] ?? $vehicle['altitude'] ?? null, 'string'),
             'timestamp'          => self::fmt($timestamp, 'string'),
+            'speed'              => self::fmt($message['speed'] ?? $vehicle['speed'] ?? null, 'string'),
             'horizontal_speed'   => self::fmt($message['speed'] ?? $vehicle['speed'] ?? null, 'string'),
             'vertical_speed'     => self::fmt($message['vertical_speed'] ?? $vehicle['vertical_speed'] ?? null, 'string'),
             'bearing'            => self::fmt($message['bearing'] ?? $vehicle['bearing'] ?? null, 'string'),
@@ -135,7 +139,7 @@ class LatraMapper {
             'RSSI'               => self::fmt($message['rssi'] ?? $vehicle['rssi'] ?? null, 'string'),
             'LAC'                => self::fmt($message['lac'] ?? $vehicle['lac'] ?? null, 'string'),
             'Cell_ID'            => self::fmt($message['cell_id'] ?? $vehicle['cell_id'] ?? null, 'string'),
-            'MGS_ID'             => self::fmt($message['mgs_id'] ?? $vehicle['mgs_id'] ?? null, 'string'),
+            'MGS_ID'             => self::uniqueMgsId($message, $activityId),
             'MCC'                => self::fmt($message['mcc'] ?? $vehicle['mcc'] ?? null, 'string'),
             'activity_id'        => (string)$activityId,
         ];
@@ -145,7 +149,11 @@ class LatraMapper {
             $item['odometer'] = self::fmt($odometer, 'string');
         }
 
-        if (!empty($addonInfo) && in_array($activityId, [2, 3, 4, 9, 10, 11, 14, 16, 17, 24], true)) {
+        // Activity 4 (Speeding), 11 (Excessive Idle) and 14 (Device Tampering)
+        // do NOT carry addon_info — activity_definitions.requires_addon = 0 for
+        // them. Keep this list in sync with validatePayload() and
+        // activityRequiresAddon().
+        if (!empty($addonInfo) && in_array($activityId, [2, 3, 9, 10, 16, 17, 24], true)) {
             $item['addon_info'] = $addonInfo;
         }
 
@@ -161,6 +169,60 @@ class LatraMapper {
         ];
 
         return $payload;
+    }
+
+    /**
+     * LATRA uses MGS_ID as a unique data running number. Keep it timestamp-based
+     * and stable on retries, while distinguishing activities at the same time.
+     *
+     * LATRA parses MGS_ID as a signed 32-bit integer: a millisecond value
+     * overflows it and the API rejects the whole payload with
+     * `For input string: "<value>"`. Epoch seconds stay inside the accepted
+     * range and the activity offset keeps the movement (1) and overspeed (4)
+     * records of the same fix apart.
+     */
+    private static function uniqueMgsId(array $message, int $activityId): string {
+        $epochSeconds = self::toEpochSeconds(
+            $message['wialon_msg_time'] ?? $message['last_message_time'] ?? time()
+        );
+        if ($epochSeconds < 0 || $epochSeconds > self::MAX_MGS_ID - $activityId) {
+            throw new RuntimeException('Cannot build a unique LATRA MGS_ID from this message');
+        }
+
+        return (string) ($epochSeconds + $activityId);
+    }
+
+    /**
+     * Activities prepared for a telemetry fix.
+     *
+     * Movement/Logging (1) is the baseline record every fix produces. Speeding
+     * (4) is prepared on top of it as soon as the horizontal speed exceeds the
+     * configured limit, so LATRA receives BOTH records for the same fix.
+     *
+     * Fixes classified as another event (panic, accident, engine state …) are
+     * not part of the movement path and keep their single activity.
+     *
+     * @param int        $detectedActivity activity the classifier assigned to the fix
+     * @param float|null $speed            horizontal speed in km/h (null = unknown)
+     * @param float      $speedLimit       configured speed limit in km/h
+     * @return int[] activity IDs to submit, baseline first
+     */
+    public static function activitiesForFix(int $detectedActivity, ?float $speed, float $speedLimit): array {
+        if (Schema::config('overspeed_dual_send', '1') !== '1') {
+            return [$detectedActivity];
+        }
+        if (!in_array($detectedActivity, [self::ACTIVITY_MOVEMENT, self::ACTIVITY_SPEEDING], true)) {
+            return [$detectedActivity];
+        }
+
+        $speeding = $detectedActivity === self::ACTIVITY_SPEEDING
+            || EventDetector::isOverspeed($speed, $speedLimit);
+
+        $activities = [self::ACTIVITY_MOVEMENT];
+        if ($speeding) {
+            $activities[] = self::ACTIVITY_SPEEDING;
+        }
+        return $activities;
     }
 
     /**
@@ -250,54 +312,9 @@ class LatraMapper {
     /**
      * Detect activity from Wialon message parameters
      */
-    public static function detectActivity(array $wialonParams, array $previousState = []): int {
-        // Check for specific events in parameters
-        if (isset($wialonParams['event'])) {
-            $event = strtolower((string)$wialonParams['event']);
-
-            $eventMap = [
-                'engine_on' => 2, 'engine start' => 2, 'ignition_on' => 2,
-                'engine_off' => 3, 'engine stop' => 3, 'ignition_off' => 3,
-                'speeding' => 4, 'overspeed' => 4,
-                'harsh_braking' => 5, 'harshbrake' => 5,
-                'harsh_turning' => 6, 'harsturn' => 6,
-                'harsh_acceleration' => 7, 'harshaccel' => 7,
-                'panic' => 8, 'sos' => 8, 'alarm' => 8,
-                'battery_low' => 9, 'low_battery' => 9,
-                'power_disconnected' => 10, 'ext_power_off' => 10,
-                'excessive_idle' => 11, 'long_idle' => 11,
-                'accident' => 12, 'crash' => 12,
-                'passenger_panic' => 13,
-                'tamper' => 14, 'tampering' => 14, 'antenna_cut' => 14,
-                'black_box' => 15,
-                'fuel' => 16, 'fuel_data' => 16,
-                'invalid_scan' => 17, 'invalid_ibutton' => 17,
-                'boundary_enter' => 20, 'geofence_in' => 20,
-                'boundary_exit' => 21, 'geofence_out' => 21,
-                'checkpoint_enter' => 22,
-                'checkpoint_exit' => 23,
-                'ibutton' => 24, 'driver_scan' => 24
-            ];
-
-            foreach ($eventMap as $key => $activityId) {
-                if (strpos($event, $key) !== false) {
-                    return $activityId;
-                }
-            }
-        }
-
-        // Check for iButton/pass parameter
-        if (isset($wialonParams['pass']) || isset($wialonParams['tco_driver1_id'])) {
-            return 24;
-        }
-
-        // Check for fuel data
-        if (isset($wialonParams['fuel']) || isset($wialonParams['fuel_level'])) {
-            return 16;
-        }
-
-        // Default: Movement/Logging
-        return 1;
+    public static function detectActivity(array $wialonParams, array $previousState = [], array $ctx = []): int {
+        $detected = EventDetector::detect($wialonParams, $previousState, $ctx);
+        return (int) $detected['activity_id'];
     }
 
     /**
@@ -318,10 +335,29 @@ class LatraMapper {
     }
 
     /**
+     * Convert to epoch seconds.
+     *
+     * Used for MGS_ID, which LATRA reads as a 32-bit integer — millisecond
+     * values do not fit and are rejected by the API.
+     */
+    public static function toEpochSeconds($timestamp): int {
+        if (is_numeric($timestamp)) {
+            $value = (int) $timestamp;
+            // Values longer than 10 digits are already in milliseconds.
+            return strlen((string) $timestamp) > 10 ? intdiv($value, 1000) : $value;
+        }
+        if (is_string($timestamp)) {
+            $ts = strtotime($timestamp);
+            return $ts ?: time();
+        }
+        return time();
+    }
+
+    /**
      * Check if activity requires addon_info
      */
     public static function activityRequiresAddon(int $activityId): bool {
-        return in_array($activityId, [2, 3, 4, 9, 10, 11, 14, 16, 17, 24], true);
+        return in_array($activityId, [2, 3, 9, 10, 16, 17, 24], true);
     }
 
     /**
@@ -466,36 +502,49 @@ class LatraMapper {
         if (empty($payload['items']) || !is_array($payload['items'])) {
             $errors[] = 'items array is required';
         } else {
-            $item = $payload['items'][0];
-
-            // Always required for a valid position/event record.
-            $required = ['latitude', 'longitude', 'timestamp', 'activity_id'];
-            foreach ($required as $field) {
-                if (!array_key_exists($field, $item) || $item[$field] === null || $item[$field] === '') {
-                    $errors[] = "items[0].$field is required";
+            foreach ($payload['items'] as $index => $activityItem) {
+                $rawActivityId = is_array($activityItem) ? ($activityItem['activity_id'] ?? null) : null;
+                if ((!is_int($rawActivityId) && !is_string($rawActivityId))
+                    || !preg_match('/^\d+$/', (string) $rawActivityId)
+                    || !isset(self::ACTIVITIES[(int) $rawActivityId])) {
+                    $errors[] = "items[$index].activity_id must be a LATRA activity ID from 1 to 24";
                 }
             }
 
-            // Optional / nullable — present and non-empty if available, else left null.
-            // These are not fabricated as '0' when the source is unknown.
-            $nullable = ['altitude', 'horizontal_speed', 'vertical_speed', 'bearing',
-                         'satellite_count', 'HDOP', 'd2d3', 'RSSI', 'LAC', 'Cell_ID', 'MGS_ID', 'MCC'];
-            foreach ($nullable as $field) {
-                if (array_key_exists($field, $item)
-                    && $item[$field] !== null && $item[$field] !== '') {
-                    $val = $item[$field];
-                    if (!is_numeric($val)) {
-                        $errors[] = "items[0].$field must be numeric";
+            if (!isset($payload['items'][0]) || !is_array($payload['items'][0])) {
+                $errors[] = 'items[0] must be an object';
+            } else {
+                $item = $payload['items'][0];
+
+                // Always required for a valid position/event record.
+                $required = ['latitude', 'longitude', 'timestamp', 'activity_id'];
+                foreach ($required as $field) {
+                    if (!array_key_exists($field, $item) || $item[$field] === null || $item[$field] === '') {
+                        $errors[] = "items[0].$field is required";
                     }
                 }
-            }
 
-            $activityId = (int)($item['activity_id'] ?? 0);
-            if (in_array($activityId, [2, 3, 4, 9, 10, 11, 14, 16, 17, 24], true) && empty($item['addon_info'])) {
-                $errors[] = "items[0].addon_info is required for activity $activityId";
-            }
-            if ($activityId === 16 && empty($item['fuel_info'])) {
-                $errors[] = "items[0].fuel_info is required for activity 16";
+                // Optional / nullable — present and non-empty if available, else left null.
+                // These are not fabricated as '0' when the source is unknown.
+                $nullable = ['altitude', 'speed', 'horizontal_speed', 'vertical_speed', 'bearing',
+                             'satellite_count', 'HDOP', 'd2d3', 'RSSI', 'LAC', 'Cell_ID', 'MGS_ID', 'MCC'];
+                foreach ($nullable as $field) {
+                    if (array_key_exists($field, $item)
+                        && $item[$field] !== null && $item[$field] !== '') {
+                        $val = $item[$field];
+                        if (!is_numeric($val)) {
+                            $errors[] = "items[0].$field must be numeric";
+                        }
+                    }
+                }
+
+                $activityId = (int)($item['activity_id'] ?? 0);
+                if (in_array($activityId, [2, 3, 9, 10, 16, 17, 24], true) && empty($item['addon_info'])) {
+                    $errors[] = "items[0].addon_info is required for activity $activityId";
+                }
+                if ($activityId === 16 && empty($item['fuel_info'])) {
+                    $errors[] = "items[0].fuel_info is required for activity 16";
+                }
             }
         }
 

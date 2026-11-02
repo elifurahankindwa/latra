@@ -11,9 +11,13 @@ class IngestPipeline {
         $prevState = Database::fetch("SELECT * FROM vehicle_state WHERE vehicle_id = ?", [$vehicleId]) ?? [];
         $enabledActs = EventDetector::enabledActivities($vehicleId);
         $speedLimit = self::speedLimit($vehicle);
+        $bucketActivities = Automation::enabledBucketActivities();
+        $bucketVehicleIds = Automation::enabledBucketVehicleIds();
+        $eventEngineOwnsActivities = Schema::config('scheduler_enabled', '1') === '1'
+            && Schema::config('event_engine_enabled', '1') === '1';
 
         $consecutiveOver = (int) ($prevState['overspending_active'] ?? 0);
-        $needSamples = Schema::configInt('overspeed_consecutive', 2);
+        $needSamples = Schema::configInt('overspeed_consecutive', 1);
 
         foreach ($messages as $raw) {
             $canonical = Normaliser::fromWialon($vehicle, $raw);
@@ -43,10 +47,14 @@ class IngestPipeline {
             }
             $overspeedReady = $consecutiveOver >= $needSamples;
 
+            // Debounce gates only whether a high-frequency EMERGENCY event is
+            // opened — it must never relabel the message's activity. Reclassifying
+            // speeding as movement here was the bug that made LATRA label every
+            // over-limit record "Movement/Logging": the stored activity became 1,
+            // and the realtime EventEngine skips activity 1 entirely.
             $emergencyType = EmergencyHandler::mapEmergencyType($activityId);
             if ($emergencyType === 'overspeed' && !$overspeedReady) {
                 $emergencyType = null;
-                $activityId = EventDetector::MOVEMENT;
             }
 
             $eventId = null;
@@ -145,9 +153,46 @@ class IngestPipeline {
             }
             Database::update('message_log', ['latra_payload' => json_encode($payload)], 'id = ?', [$stored['id']]);
 
-            // Only queue rows for enabled buckets.
-            if (Automation::isActivityAllowed($activityId) && in_array($vehicleId, Automation::enabledBucketVehicleIds(), true)) {
+            $bucketAllowsActivity = in_array($activityId, $bucketActivities, true)
+                && in_array($vehicleId, $bucketVehicleIds, true);
+            $eventEngineAllowsActivity = $eventEngineOwnsActivities
+                && $activityId !== EventDetector::MOVEMENT
+                && in_array($vehicleId, $bucketVehicleIds, true);
+            if ($bucketAllowsActivity || $eventEngineAllowsActivity) {
                 Outbox::enqueue($stored + ['activity_id' => $activityId, 'idempotency_key' => $msgData['idempotency_key']], $payload, $eventId, $eventId ? 10 : 0);
+            }
+
+            // Movement/Logging (1) is the baseline record and Speeding (4) is
+            // prepared on top of it whenever the horizontal speed exceeds the
+            // limit — both records are then queued for LATRA for the same fix.
+            $fixSpeed = $canonical['speed'] !== null ? (float) $canonical['speed'] : null;
+            foreach (LatraMapper::activitiesForFix($activityId, $fixSpeed, $speedLimit) as $pairedActivity) {
+                if ($pairedActivity === $activityId) {
+                    continue;
+                }
+                $pairedAllowed = (in_array($pairedActivity, $bucketActivities, true)
+                        && in_array($vehicleId, $bucketVehicleIds, true))
+                    || ($eventEngineOwnsActivities
+                        && $pairedActivity !== EventDetector::MOVEMENT
+                        && in_array($vehicleId, $bucketVehicleIds, true));
+                if (!$pairedAllowed) {
+                    continue;
+                }
+                $pairedPayload = LatraMapper::buildPayload($vehicle, $stored, $pairedActivity, [], []);
+                if (empty($pairedPayload['items'])) {
+                    continue;
+                }
+                // The emergency reference belongs to the emergency activity only.
+                if ($pairedActivity === EventDetector::SPEEDING && $eventId) {
+                    $pairedPayload['items'][0]['emergency_event_id'] = $eventId;
+                }
+                $pairedKey = 'v' . $vehicleId . '-t' . $canonical['wialon_msg_time'] . '-a' . $pairedActivity;
+                Outbox::enqueue(
+                    array_merge($stored, ['activity_id' => $pairedActivity, 'idempotency_key' => $pairedKey]),
+                    $pairedPayload,
+                    ($pairedActivity === EventDetector::SPEEDING) ? $eventId : null,
+                    ($pairedActivity === EventDetector::SPEEDING && $eventId) ? 10 : 0
+                );
             }
             $inserted++;
         }

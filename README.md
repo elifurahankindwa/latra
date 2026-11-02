@@ -30,7 +30,7 @@ Polls GPS/telemetry from Wialon, classifies 24 activity types, and submits LATRA
 | Database | MySQL 10.5+ / MariaDB 10.6+ |
 | Web Server | Apache 2.4 with mod_php |
 | Frontend | Vanilla JS, CSS, SweetAlert2, Leaflet maps |
-| Scheduler | Cron → `cron.php` (minute-level) |
+| Scheduler | `bin/worker.php` (2–5s event polling); cron fallback (`cron.php`, minute-level) |
 | External APIs | Wialon Remote API, LATRA VTS Annexure-1 |
 
 No Composer, no Node.js, no build step. Drop it on Apache and go.
@@ -61,7 +61,17 @@ php scripts/install.php admin your_password
 
 Schema, tables, and migrations auto-create on first run.
 
-**Cron** (minimal setup):
+**Low-latency events:** run the worker service for 2–5 second Wialon polling. The
+included systemd unit can be installed and enabled with:
+
+```bash
+sudo cp scripts/latra-worker.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now latra-worker.service
+```
+
+Use cron only as a fallback when a persistent worker is unavailable; cron polls
+at minute-level and therefore cannot provide the same event latency:
 
 ```bash
 * * * * * /usr/bin/php /path/to/latra/cron.php >> /path/to/latra/logs/cron.log 2>&1
@@ -70,6 +80,8 @@ Schema, tables, and migrations auto-create on first run.
 ```
 
 `cleanup.sh` enforces retention: streaming Wialon→LATRA data 14 days (env `MAINTAIN_STREAM_DAYS`), automation 60d, audit 365d, AI 180d; rotates `error.log`/`cron.log` at 20 MB; gzips old backups. Constant data (vehicles, users, jobs, buckets, config, KPIs) is never deleted.
+
+Data retention runs through the chunked `Retention` engine (bounded deletes, per-step isolation, dry-run) and idle emergency events are auto-closed; large imports/pushes run in a background worker instead of the request. See **[DATA_LIFECYCLE.md](DATA_LIFECYCLE.md)** for the full design, retention windows, and operations.
 
 For detailed instructions see **[SETUP_GUIDE.md](SETUP_GUIDE.md)**.
 
@@ -192,6 +204,56 @@ Runtime tunables in the `config` database table (editable via Settings page).
 | 10 | External Power Disconnected | 22 | Enter Checkpoint |
 | 11 | Excessive Idle | 23 | Leave Checkpoint |
 | 12 | Accident | 24 | iButton Scan (Regular) |
+
+### Movement + Speeding are reported together
+
+Movement/Logging (activity 1) is the baseline record for every GPS fix. When the
+horizontal speed of a fix exceeds the configured speed limit, the Speeding record
+(activity 4) is prepared **on top of** it, so LATRA receives **both** records for
+the same fix — same position, same timestamp, distinct `MGS_ID`.
+
+The pairing happens where the movement record is prepared for delivery:
+
+- `IngestPipeline` queues the movement row and the speeding row to the outbox
+  together, so one flush delivers both.
+- `BucketRunner` submits both payloads back-to-back in the same bucket run.
+
+The stored classification of the fix is unchanged (an over-limit fix is still
+classified as Speeding, so the emergency event machinery and the real-time event
+engine keep working). Set `overspeed_dual_send = 0` in the `config` table to
+switch the pairing off and report only the classified activity.
+
+### `MGS_ID` must stay inside LATRA's 32-bit range
+
+LATRA parses `MGS_ID` as a signed 32-bit integer. A millisecond value
+(`1792650155000`) overflows it and the API rejects the **whole** payload with
+
+```json
+{"status":"0","message":"For input string: \"1792650155001\""}
+```
+
+`LatraMapper::uniqueMgsId()` therefore builds the running number from **epoch
+seconds plus the activity ID** (`1792650155 + 1` for movement, `1792650155 + 4`
+for speeding). That keeps the value unique per device, inside the accepted
+range, and distinct between the two records of the same fix. The `timestamp`
+field stays in milliseconds — LATRA reads that one as a 64-bit value.
+
+A rejected payload is classified as a *permanent* failure, so the outbox row
+stops retrying. When the format changes, requeue the affected rows once:
+
+```sql
+UPDATE outbox SET status = 'pending', next_attempt_at = UTC_TIMESTAMP(), tries = 0, last_error = NULL
+WHERE status = 'failed' AND last_error LIKE '%For input string%';
+```
+
+### Retention keeps a message until every activity is delivered
+
+One fix can carry more than one activity record, so `message_log` is only
+purged once **all** outbox rows of that message are delivered. Both the hourly
+`purge_delivered` job and the daily `retention` job skip messages that still
+have a queued (pending/in-flight/failed) row. Without that guard the source
+message could disappear while its movement row was still waiting, and the flush
+would fail on the `push_log` foreign key.
 
 ---
 

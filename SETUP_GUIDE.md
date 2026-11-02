@@ -361,6 +361,9 @@ INSERT IGNORE INTO bucket_vehicles (bucket_id, vehicle_id) VALUES
 ### Enable Activities for Vehicles
 
 Each vehicle needs activities enabled in `activity_mappings`:
+Speeding (activity 4) is enabled automatically for existing and newly synced
+vehicles so detected overspeed events can be reported in real time. You can
+disable it per vehicle from **Activity Mapping** if needed.
 
 ```sql
 -- Enable all 24 activities for vehicle id=1
@@ -383,16 +386,30 @@ Navigate to **Automation** page to:
 
 ---
 
-## 10. Set Up the Cron Scheduler
+## 10. Set Up the Scheduler
 
-The scheduler runs every minute via cron and orchestrates all automation:
+For low-latency event detection (including speeding), use the persistent worker.
+It polls Wialon every 2–5 seconds and runs the event engine automatically:
 
-### Install the Crontab
+```bash
+sudo cp scripts/latra-worker.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now latra-worker.service
+sudo systemctl status latra-worker.service
+```
+
+The included service unit assumes this installation path and `/opt/lampp/bin/php`.
+Adjust those paths if your deployment differs.
+
+If a persistent worker is unavailable, cron is a fallback with minute-level
+polling; it does not provide the same event latency:
+
+### Install the Crontab Fallback
 
 ```bash
 crontab -e
 
-# Scheduler (every minute)
+# Scheduler fallback (every minute; use instead of the persistent worker)
 * * * * * /usr/bin/php /path/to/latra/cron.php >> /path/to/latra/logs/cron.log 2>&1
 
 # Nightly backup (03:00) — edit scripts/backup.sh path if needed
@@ -404,13 +421,16 @@ crontab -e
 
 > **Tip (cPanel):** In Terminal run `which php` to get your PHP path (commonly `/usr/local/bin/php`). Replace `/path/to/latra/` with your actual project directory.
 
-### Verify Cron is Running
+### Verify the Scheduler
 
 ```bash
-# Check cron service
+# Check worker service (low-latency mode)
+systemctl status latra-worker.service
+
+# Or check cron fallback
 ps aux | grep cron
 
-# Check cron.php is executing
+# Check recent scheduler logs
 tail -5 logs/cron.log
 
 # Check scheduler heartbeat
@@ -653,11 +673,19 @@ tail -20 logs/app-$(date +%Y-%m-%d).log
 Run daily from cron (`15 4 * * *` → `scripts/cleanup.sh`). It performs retention for
 streaming data (fetched from Wialon and posted to LATRA) while **never touching
 constant/reference data** (vehicles, users, jobs, buckets, config, KPIs) and **never
-deleting pending/failed/unresolved rows**.
+deleting rows still queued for LATRA delivery** (referenced by `outbox`).
+
+Since schema v11 every purge is delegated to the chunked `Retention` engine
+(`includes/Retention.php`): bounded `DELETE … LIMIT` batches under a wall-clock
+budget, per-step isolation, and a dry-run mode. See **`DATA_LIFECYCLE.md`** for the
+full design, the auto-close of idle emergency events, the background task queue, and
+operations. The in-app scheduler performs the same cycle; the table below lists the
+`maintain.php` env overrides.
 
 | Window | Env override | Default | What it prunes |
 |---|---|---|---|
-| Streaming data | `MAINTAIN_STREAM_DAYS` | `14` | `message_log` (sent), `push_log`, `wialon_events`, `outbox` (sent), `webhook_events`, `rate_limits` |
+| Streaming data | `MAINTAIN_STREAM_DAYS` | `14` | `message_log` (sent + stale pending/failed not in the outbox), `push_log`, `wialon_events`, `outbox` (sent/rejected), `webhook_events`, `rate_limits` |
+| Rejected/validation | `MAINTAIN_REJECTED_DAYS` | `30` | `message_log` (rejected), `validation_errors` |
 | Automation history | `MAINTAIN_RUN_DAYS` | `60` | `automation_runs`, `job_runs` |
 | Audit trail | `MAINTAIN_AUDIT_DAYS` | `365` | `audit_log` |
 | AI chat history | `MAINTAIN_AI_DAYS` | `180` | `ai_conversations`, `ai_chat_log` |
@@ -666,6 +694,8 @@ deleting pending/failed/unresolved rows**.
 | Backups | `CLEAN_BACKUP_DAYS` / `CLEAN_GZIP_DAYS` | `14` / `3` | `backups/` retention + gzip old dumps |
 
 Run once by hand: `bash scripts/cleanup.sh` (DB-down is not fatal — files are still cleaned).
+Preview the DB portion without deleting: `php scripts/maintain.php --dry-run`.
+After a large purge, reclaim physical disk with `php scripts/reclaim.php`.
 
 ### Login-attempt log (`logs/login.log`)
 
@@ -707,7 +737,7 @@ latra-wialon-integration/
 ├── includes/                   # Core service classes
 │   ├── Database.php            # PDO wrapper (singleton, auto-reconnect)
 │   ├── Auth.php                # Login, sessions, CSRF, rate limiting
-│   ├── Schema.php              # Auto-migration (version 8)
+│   ├── Schema.php              # Auto-migration (version 11)
 │   ├── Vault.php               # AES-256-CBC encrypted secrets
 │   ├── Logger.php              # Structured JSON-line logging
 │   ├── WialonAPI.php           # Wialon Remote API client
@@ -722,6 +752,8 @@ latra-wialon-integration/
 │   ├── GpsValidator.php        # Payload validation
 │   ├── Normaliser.php          # Wialon → canonical format
 │   ├── ParamResolver.php       # Device parameter normalization
+│   ├── Retention.php           # Chunked data-retention engine (schema v11)
+│   ├── BackgroundTasks.php     # Background task queue (fleet sync / fetch / push)
 │   ├── FleetSync.php           # Wialon fleet synchronization
 │   ├── Outbox.php              # Durable message queue
 │   ├── Scheduler.php           # Job scheduler (locks, ordering)
@@ -733,7 +765,8 @@ latra-wialon-integration/
 │
 ├── scripts/
 │   ├── setup_admin.php         # Create/reset admin user
-│   ├── maintain.php            # Maintenance utilities
+│   ├── maintain.php            # DB retention (delegates to Retention engine)
+│   ├── reclaim.php             # OPTIMIZE lifecycle tables (disk reclaim)
 │   └── backup.sh               # Database backup script
 │
 ├── bin/
