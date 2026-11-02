@@ -4,8 +4,8 @@ After=network.target mysql.service
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/lampp/htdocs/latra-wialon-integration
-ExecStart=/opt/lampp/bin/php /opt/lampp/htdocs/latra-wialon-integration/bin/worker.php
+WorkingDirectory=/home/codeafrica/latra.codeafrica.co.tz
+ExecStart=/opt/cpanel/ea-php84/root/usr/bin/php /home/codeafrica/latra.codeafrica.co.tz/bin/worker.php
 Restart=always
 RestartSec=3
 User=daemon
