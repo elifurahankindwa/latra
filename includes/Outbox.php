@@ -9,7 +9,9 @@ class Outbox {
         $key = $messageRow['idempotency_key'] ?? ('msg-' . $msgId . '-' . (int) $messageRow['activity_id'] . '-' . ($eventId ?: 'n'));
         $body = json_encode($payload, JSON_THROW_ON_ERROR);
         $pdo = Database::getInstance();
-        $pdo->beginTransaction();
+        // Ingestion owns the source transaction; standalone producers still own theirs.
+        $ownsTransaction = !$pdo->inTransaction();
+        if ($ownsTransaction) $pdo->beginTransaction();
         try {
             $source = $pdo->prepare('SELECT id FROM message_log WHERE id = ? FOR UPDATE');
             $source->execute([$msgId]);
@@ -27,10 +29,10 @@ class Outbox {
             $lookup = $pdo->prepare('SELECT id FROM outbox WHERE idempotency_key = ?');
             $lookup->execute([$key]);
             $id = (int) $lookup->fetchColumn();
-            $pdo->commit();
+            if ($ownsTransaction) $pdo->commit();
             return $id;
         } catch (Throwable $e) {
-            if ($pdo->inTransaction()) $pdo->rollBack();
+            if ($ownsTransaction && $pdo->inTransaction()) $pdo->rollBack();
             throw $e;
         }
     }

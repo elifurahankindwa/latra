@@ -21,7 +21,7 @@ jobs:
         ports:
           - 3306:3306
         options: >-
-          --health-cmd="mysqladmin ping -h 127.0.0.1 -psynthetic-test-password"
+          --health-cmd="mariadb-admin ping -h 127.0.0.1 -psynthetic-test-password || mysqladmin ping -h 127.0.0.1 -psynthetic-test-password"
           --health-interval=5s --health-timeout=5s --health-retries=30
     steps:
       - uses: actions/checkout@v4
@@ -67,3 +67,36 @@ jobs:
         run: |
           php scripts/migrate-delivery.php
           php scripts/migrate-delivery.php
+  ingestion:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        database: ['mysql:8.0', 'mariadb:10.11']
+    services:
+      database:
+        image: ${{ matrix.database }}
+        env:
+          MYSQL_ROOT_PASSWORD: synthetic-test-password
+          MYSQL_DATABASE: latra_test_ingestion
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mariadb-admin ping -h 127.0.0.1 -psynthetic-test-password || mysqladmin ping -h 127.0.0.1 -psynthetic-test-password"
+          --health-interval=5s --health-timeout=5s --health-retries=30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: pdo_mysql, mbstring
+          coverage: none
+      # Separate from the delivery fixture: this suite imports the real schema and kills its own workers.
+      - name: Verify atomic ingestion, crash restart and unchanged eligibility
+        env:
+          LATRA_TEST_DSN: mysql:host=127.0.0.1;port=3306;dbname=latra_test_ingestion;charset=utf8mb4
+          LATRA_TEST_USER: root
+          LATRA_TEST_PASSWORD: synthetic-test-password
+          LATRA_TEST_ALLOW_RESET: '1'
+        run: php tests/ingestion-recovery.php

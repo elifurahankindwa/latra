@@ -27,3 +27,6 @@ bruno/**/environments/local.bru
 
 # Local review documents and handoffs (never commit)
 /docs/
+
+# Dated engineering reports and evidence (local/server only)
+/reports/
