@@ -6,6 +6,12 @@ gpt-api.txt
 *.env
 !*.env.example
 
+# Reference documents (keep only the project README)
+*.pdf
+*.txt
+*.md
+!README.md
+
 # Logs and runtime artifacts
 logs/*
 !logs/.gitkeep

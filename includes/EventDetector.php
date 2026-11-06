@@ -29,6 +29,7 @@ class EventDetector {
     const ENTER_CHECKPOINT = 22;
     const LEAVE_CHECKPOINT = 23;
     const IBUTTON_REGULAR = 24;
+    public const EXCESSIVE_IDLE_SECONDS = 3600;
 
     /** Wialon event-name keyword → LATRA activity (passive/event match). */
     public const EVENT_MAP = [
@@ -187,6 +188,75 @@ class EventDetector {
 
         // Default: regular movement/logging.
         return $check(self::MOVEMENT, 'Movement/Logging', 'movement') ?? ['activity_id' => self::MOVEMENT, 'reason' => 'Movement/Logging', 'event_type' => 'movement'];
+    }
+
+    /**
+     * Track a stationary period and emit one excessive-idle event after one
+     * hour at exactly 0 km/h. The period ends after movement and engine-on
+     * have both been observed.
+     *
+     * @return array{activity_id:int|null,state:array<string,int>}
+     */
+    public static function excessiveIdle(
+        array $state,
+        ?float $speed,
+        int $messageTime,
+        ?bool $engineOn,
+        bool $enabled,
+        int $thresholdSeconds = self::EXCESSIVE_IDLE_SECONDS
+    ): array {
+        $startedAt = (int) ($state['idle_started_at'] ?? 0);
+        $reported = (int) ($state['idle_reported'] ?? 0) === 1;
+        $moved = (int) ($state['idle_moved'] ?? 0) === 1;
+        $engineSeen = (int) ($state['idle_engine_on'] ?? 0) === 1;
+        $messageTime = $messageTime > 0 ? $messageTime : time();
+
+        if ($speed > 0) {
+            $moved = true;
+        }
+        if ($engineOn === true) {
+            $engineSeen = true;
+        }
+
+        if ($speed !== 0.0 && !$reported) {
+            $startedAt = 0;
+            $moved = false;
+            $engineSeen = false;
+        } elseif ($speed !== 0.0 && $reported) {
+            // Preserve a reported idle period until engine-on is also seen.
+            $startedAt = $startedAt ?: $messageTime;
+        } elseif ($startedAt === 0) {
+            $startedAt = $messageTime;
+            $reported = false;
+            $moved = false;
+            $engineSeen = $engineOn === true;
+        }
+
+        $activityId = null;
+        if ($speed === 0.0 && !$reported
+            && ($messageTime - $startedAt) >= max(1, $thresholdSeconds)) {
+            $reported = true;
+            if ($enabled) {
+                $activityId = self::EXCESSIVE_IDLE;
+            }
+        }
+
+        if ($reported && $moved && $engineSeen) {
+            $startedAt = 0;
+            $reported = false;
+            $moved = false;
+            $engineSeen = false;
+        }
+
+        return [
+            'activity_id' => $activityId,
+            'state' => [
+                'idle_started_at' => $startedAt,
+                'idle_reported' => $reported ? 1 : 0,
+                'idle_moved' => $moved ? 1 : 0,
+                'idle_engine_on' => $engineSeen ? 1 : 0,
+            ],
+        ];
     }
 
     /**

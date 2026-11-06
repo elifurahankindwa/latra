@@ -30,6 +30,10 @@ class Schema {
         self::addColumn('vehicles', 'engine_param VARCHAR(50) NULL');
         self::addColumn('vehicles', 'fuel_level_sensor VARCHAR(64) NULL');
         self::addColumn('vehicles', 'fuel_cadence_min INT UNSIGNED NULL DEFAULT 30');
+        self::addColumn('vehicle_state', 'idle_started_at BIGINT NULL');
+        self::addColumn('vehicle_state', 'idle_reported TINYINT(1) NOT NULL DEFAULT 0');
+        self::addColumn('vehicle_state', 'idle_moved TINYINT(1) NOT NULL DEFAULT 0');
+        self::addColumn('vehicle_state', 'idle_engine_on TINYINT(1) NOT NULL DEFAULT 0');
 
         self::addColumn('message_log', 'driver_id VARCHAR(32) NULL');
         self::addColumn('message_log', 'odometer DECIMAL(12,2) NULL');
@@ -282,6 +286,7 @@ class Schema {
             ['default_speed_limit_kmh', '80', 'Default speed limit'],
             ['overspeed_consecutive', '1', 'Samples above limit before event'],
             ['overspeed_dual_send', '1', 'Send Movement/Logging together with Speeding when the speed limit is exceeded'],
+            ['excessive_idle_seconds', '3600', 'Seconds at exactly 0 km/h before activity 11'],
             ['battery_low_pct', '20', 'Low battery percent threshold'],
             ['battery_low_mv', '3200', 'Low battery millivolt threshold'],
             ['outbox_max_tries', '8', 'Max outbox retries'],

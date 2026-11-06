@@ -32,13 +32,32 @@ class IngestPipeline {
             ]);
             $activityId = (int) $detected['activity_id'];
 
+            $ignited = EventDetector::engineState($params, $vehicle['engine_param'] ?? null);
+            $idle = EventDetector::excessiveIdle(
+                $prevState,
+                $canonical['speed'] !== null ? (float) $canonical['speed'] : null,
+                (int) $canonical['wialon_msg_time'],
+                $ignited,
+                !isset($enabledActs[EventDetector::EXCESSIVE_IDLE])
+                    || $enabledActs[EventDetector::EXCESSIVE_IDLE],
+                Schema::configInt('excessive_idle_seconds', EventDetector::EXCESSIVE_IDLE_SECONDS)
+            );
+            if ($idle['activity_id'] !== null) {
+                $activityId = $idle['activity_id'];
+                $detected = [
+                    'activity_id' => $activityId,
+                    'reason' => 'Stationary for at least one hour',
+                    'event_type' => 'excessive_idle',
+                ];
+            }
+
             // Maintain a rolling engine baseline across the whole batch so
             // transitions between consecutive messages are detected, and seed
             // the baseline on the first message that reports ignition state.
-            $ignited = EventDetector::engineState($params, $vehicle['engine_param'] ?? null);
             if ($ignited !== null) {
                 $prevState['engine_status'] = $ignited ? 'on' : 'off';
             }
+            $prevState = array_merge($prevState, $idle['state']);
 
             if ($activityId === EventDetector::SPEEDING) {
                 $consecutiveOver++;
@@ -219,6 +238,10 @@ class IngestPipeline {
                 'last_event_activity_id' => $lastDetected['activity_id'],
                 'last_event_at' => date(DATE_FORMAT),
                 'overspending_active' => $consecutiveOver,
+                'idle_started_at' => (int) ($prevState['idle_started_at'] ?? 0) ?: null,
+                'idle_reported' => (int) ($prevState['idle_reported'] ?? 0),
+                'idle_moved' => (int) ($prevState['idle_moved'] ?? 0),
+                'idle_engine_on' => (int) ($prevState['idle_engine_on'] ?? 0),
             ]);
         }
 
