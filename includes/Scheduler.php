@@ -5,7 +5,6 @@
 class Scheduler {
     public static function tick(bool $loopOnce = true): void {
         Schema::ensure();
-        @file_put_contents(LOGS_DIR . '/last_tick.txt', date(DATE_FORMAT));
 
         // Buckets run under their own lock so heavy background jobs can never
         // starve the LATRA data submission cadence.
@@ -15,6 +14,8 @@ class Scheduler {
 
     /** Run due automation buckets under a dedicated lock. */
     public static function tickBuckets(): void {
+        @file_put_contents(LOGS_DIR . '/last_tick.txt', date(DATE_FORMAT));
+
         $lock = Database::fetch("SELECT GET_LOCK('latra-scheduler-buckets', 0) AS acquired");
         if (!(int) ($lock['acquired'] ?? 0)) {
             echo "[" . date(DATE_FORMAT) . "] Bucket scheduler already running.\n";
