@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/autoload.php';
 
 class Automation {
 
@@ -298,18 +299,12 @@ class Automation {
      * Race-safe message insert (dedup on vehicle_id + wialon_msg_time).
      */
     public static function storeMessage(array $msgData): bool {
-        $exists = Database::fetch(
-            "SELECT id FROM message_log WHERE vehicle_id = ? AND wialon_msg_time = ?",
-            [$msgData['vehicle_id'], $msgData['wialon_msg_time']]
-        );
-        if ($exists) return false;
-        try {
-            Database::insert('message_log', $msgData);
-            return true;
-        } catch (PDOException $e) {
-            if ($e->getCode() === '23000') return false;
-            throw $e;
+        if (defined('DELIVERY_ARCHITECTURE') && DELIVERY_ARCHITECTURE === 'relay') {
+            throw new RuntimeException('Retained-source writes are disabled in relay mode');
         }
+        return (new \Latra\Infrastructure\Persistence\PdoIngestionMessageRepository(
+            Database::getInstance(),
+        ))->storeMessage($msgData);
     }
 
     /**
@@ -424,6 +419,25 @@ class Automation {
             json_decode($message['addon_info'] ?? '[]', true) ?: [],
             json_decode($message['fuel_info'] ?? '[]', true) ?: []
         );
+        if (RelayRuntime::enabled()) {
+            $vehicle = Database::fetch('SELECT * FROM vehicles WHERE id = ?', [(int) ($message['vehicle_id'] ?? 0)]);
+            if (!$vehicle) {
+                return ['ok' => false, 'payload' => $payload, 'response' => 'Vehicle not found for relay submission',
+                    'responseData' => [], 'httpCode' => 0, 'latency' => 0, 'curlError' => 'Vehicle not found',
+                    'attempted' => false, 'deferred' => true];
+            }
+            try {
+                $result = RelayRuntime::queueForVehicle($payload, (int) ($message['vehicle_id'] ?? $vehicle['id'] ?? 0));
+                return ['ok' => !empty($result['success']), 'queued' => (int) ($result['queued'] ?? 0),
+                    'payload' => $payload, 'response' => $result['message'] ?? 'Queued for relay delivery',
+                    'responseData' => [], 'httpCode' => 0, 'latency' => 0, 'curlError' => '',
+                    'attempted' => false, 'recorded' => true];
+            } catch (Throwable $e) {
+                return ['ok' => false, 'payload' => $payload, 'response' => $e->getMessage(),
+                    'responseData' => [], 'httpCode' => 0, 'latency' => 0, 'curlError' => $e->getMessage(),
+                    'attempted' => false, 'deferred' => true];
+            }
+        }
         return LatraAdapter::submit($payload, (string) ($message['idempotency_key'] ?? ('msg-' . ($message['id'] ?? 'x'))));
     }
 }

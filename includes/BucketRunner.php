@@ -4,6 +4,7 @@ class BucketRunner {
 
     // Run one bucket.
     public static function run(array $bucket): array {
+        if (defined('DELIVERY_ARCHITECTURE') && DELIVERY_ARCHITECTURE === 'relay') return RelayRuntime::bucket($bucket);
         $bucketId = (int) $bucket['id'];
         $activityId = (int) $bucket['activity_id'];
         $interval = 180;

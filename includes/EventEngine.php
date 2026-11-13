@@ -193,6 +193,7 @@ class EventEngine {
     // ------------------------------------------------------------------
 
     public static function runCycle(): array {
+        if (defined('DELIVERY_ARCHITECTURE') && DELIVERY_ARCHITECTURE === 'relay') return RelayRuntime::cycle();
         self::ensureEventSchema();
         $stats = [
             'vehicles' => 0, 'fetched' => 0, 'detected' => 0, 'duplicates' => 0,

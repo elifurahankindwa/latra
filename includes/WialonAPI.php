@@ -16,7 +16,7 @@ class WialonAPI {
     /**
      * Execute Wialon API request
      */
-    public function request(string $svc, array $params = []): ?array {
+    public function request(string $svc, array $params = [], ?int $maxResponseBytes = null): ?array {
         $url = $this->baseUrl;
         if (!str_ends_with($url, '/wialon/ajax.html')) {
             $url = rtrim($url, '/') . '/wialon/ajax.html';
@@ -40,6 +40,16 @@ class WialonAPI {
         curl_setopt($ch, CURLOPT_HTTPHEADER, [
             'Content-Type: application/x-www-form-urlencoded'
         ]);
+        // The relay bounds each response before decoding. Existing callers keep their transport policy.
+        $boundedBody = '';
+        if ($maxResponseBytes !== null) {
+            if ($maxResponseBytes < 1) throw new InvalidArgumentException('Positive response bound required');
+            curl_setopt($ch, CURLOPT_WRITEFUNCTION, static function ($handle, string $chunk) use (&$boundedBody, $maxResponseBytes): int {
+                if (strlen($boundedBody) + strlen($chunk) > $maxResponseBytes) return 0;
+                $boundedBody .= $chunk;
+                return strlen($chunk);
+            });
+        }
 
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -48,6 +58,8 @@ class WialonAPI {
             error_log("Wialon API HTTP Error: $httpCode");
             return null;
         }
+
+        if ($maxResponseBytes !== null) $response = $boundedBody;
 
         $data = json_decode($response, true);
 
@@ -149,6 +161,49 @@ class WialonAPI {
         $to = time();
         $from = $to - 86400; // Last 24 hours
         return $this->getMessages($unitId, $from, $to, $limit);
+    }
+
+    /** Load one data-message window in this session; never turn a partial page into progress. */
+    public function getCompleteWindow(int $unitId, int $from, int $to, int $pageSize, int $maxRecords, int $maxBytes): array {
+        if ($unitId < 1 || $from < 0 || $to < $from || min($pageSize, $maxRecords, $maxBytes) < 1) {
+            throw new InvalidArgumentException('Explicit bounded Wialon window required');
+        }
+        try {
+            $loaded = $this->request('messages/load_interval', [
+                'itemId' => $unitId, 'timeFrom' => $from, 'timeTo' => $to,
+                'flags' => 0, 'flagsMask' => 0xFF00, 'loadCount' => min($pageSize, $maxRecords),
+            ], $maxBytes);
+            $total = $loaded['count'] ?? null;
+            if (is_int($total) && $total > $maxRecords) throw new RuntimeException('Wialon window needs subdivision', 1001);
+            if (!is_int($total) || $total < 0 || $total > $maxRecords) {
+                throw new RuntimeException('Invalid or over-bound Wialon count');
+            }
+            $messages = [];
+            $bytes = 0;
+            for ($offset = 0; $offset < $total; $offset += $pageSize) {
+                $page = $offset === 0 ? ($loaded['messages'] ?? null) : $this->request('messages/get_messages', [
+                    // The loaded-message API uses an exclusive upper boundary (verified on the pilot).
+                    'indexFrom' => $offset, 'indexTo' => min($total, $offset + $pageSize),
+                ], $maxBytes);
+                if (!is_array($page) || !array_is_list($page) || count($page) !== min($pageSize, $total - $offset)) {
+                    throw new RuntimeException('Incomplete Wialon page');
+                }
+                foreach ($page as $message) {
+                    if (!is_array($message) || !is_int($message['t'] ?? null) || $message['t'] < $from || $message['t'] > $to) {
+                        throw new RuntimeException('Invalid Wialon source timestamp');
+                    }
+                    $bytes += strlen(json_encode($message, JSON_THROW_ON_ERROR));
+                    if ($bytes > $maxBytes) throw new RuntimeException('Wialon window exceeds byte bound');
+                    $messages[] = $message;
+                }
+            }
+            if ($total === 0 && ($loaded['messages'] ?? null) !== []) {
+                throw new RuntimeException('Inconsistent empty Wialon window');
+            }
+            return $messages;
+        } finally {
+            $this->request('messages/unload', []);
+        }
     }
 
     /**

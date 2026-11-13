@@ -87,6 +87,22 @@ function sendSse(array $data): void {
     flush();
 }
 
+function queueRelayPayload(array $vehicle, array $payload): ?array {
+    if (!RelayRuntime::enabled()) {
+        return null;
+    }
+    try {
+        $result = RelayRuntime::queueForVehicle($payload, (int) $vehicle['id']);
+        return [
+            'success' => (bool) ($result['success'] ?? false),
+            'queued' => (int) ($result['queued'] ?? 0),
+            'message' => $result['message'] ?? 'Saved to the durable relay. Real LATRA delivery is blocked.',
+        ];
+    } catch (Throwable $e) {
+        return ['success' => false, 'message' => $e->getMessage()];
+    }
+}
+
 try {
     switch ($action) {
 
@@ -157,6 +173,13 @@ try {
 
             $vehicle = Database::fetch("SELECT * FROM vehicles WHERE id = ?", [$vehicleId]);
             if (!$vehicle) throw new Exception('Vehicle not found');
+
+            if (RelayRuntime::enabled()) {
+                $collected = RelayRuntime::poll($vehicle, 86400, 100);
+                echo json_encode(['success' => true, 'message' => $collected['fetched'] . ' source reports collected; '
+                    . $collected['rejected'] . ' newly held for review.'] + $collected);
+                break;
+            }
 
             $wialon = new WialonAPI();
             if (!$wialon->login()) throw new Exception('Wialon login failed');
@@ -303,6 +326,14 @@ try {
                 json_decode($msg['fuel_info'] ?? '[]', true)
             );
 
+            if (RelayRuntime::enabled()) {
+                $vehicle = Database::fetch("SELECT * FROM vehicles WHERE id = ?", [(int) $msg['vehicle_id']]);
+                if (!$vehicle) throw new Exception('Vehicle not found');
+                $result = queueRelayPayload($vehicle, $payload);
+                echo json_encode($result ?: ['success' => true, 'message' => 'Saved to the durable relay. Real LATRA delivery is blocked.']);
+                break;
+            }
+
             Database::update('message_log', ['latra_payload' => json_encode($payload)], 'id = ?', [$msgId]);
 
             $ch = curl_init(LATRA_API_URL);
@@ -393,6 +424,13 @@ try {
             $validationErrors = LatraMapper::validatePayload($payload);
             if ($validationErrors) {
                 throw new Exception('Invalid LATRA payload: ' . implode('; ', $validationErrors));
+            }
+            if (RelayRuntime::enabled()) {
+                $vehicle = Database::fetch("SELECT * FROM vehicles WHERE id = ?", [(int) $msg['vehicle_id']]);
+                if (!$vehicle) throw new Exception('Vehicle not found');
+                $result = queueRelayPayload($vehicle, $payload);
+                echo json_encode($result ?: ['success' => true, 'message' => 'Saved to the durable relay. Real LATRA delivery is blocked.']);
+                break;
             }
             $payloadJson = json_encode($payload, JSON_THROW_ON_ERROR);
             Database::update('message_log', ['latra_payload' => $payloadJson], 'id = ?', [$msgId]);
@@ -603,6 +641,11 @@ try {
             if ($validationErrors) {
                 throw new Exception('Invalid LATRA payload: ' . implode('; ', $validationErrors));
             }
+            if (RelayRuntime::enabled()) {
+                $result = queueRelayPayload($vehicle, $payload);
+                echo json_encode($result ?: ['success' => true, 'message' => 'Saved to the durable relay. Real LATRA delivery is blocked.']);
+                break;
+            }
             $ch = curl_init(LATRA_API_URL);
             curl_setopt_array($ch, [
                 CURLOPT_RETURNTRANSFER => true,
@@ -678,13 +721,20 @@ try {
             $id = intval($_POST['id'] ?? 0);
             $log = Database::fetch("SELECT * FROM push_log WHERE id = ?", [$id]);
             if (!$log) throw new Exception('Log entry not found');
-            
+            $vehicle = Database::fetch("SELECT * FROM vehicles WHERE id = ?", [(int) $log['vehicle_id']]);
+            if (!$vehicle) throw new Exception('Vehicle not found');
+
             $payloadJson = $log['payload'];
             $payload = json_decode($payloadJson ?? '', true);
             if (!$payload) throw new Exception('Stored payload is invalid JSON. Use Edit to rebuild it.');
-$validationErrors = LatraMapper::validatePayload($payload);
+            $validationErrors = LatraMapper::validatePayload($payload);
             if ($validationErrors) {
                 throw new Exception('Invalid LATRA payload: ' . implode('; ', $validationErrors) . '. Use Edit and Update JSON before retrying.');
+            }
+            if (RelayRuntime::enabled()) {
+                $result = queueRelayPayload($vehicle, $payload);
+                echo json_encode($result ?: ['success' => true, 'message' => 'Saved to the durable relay. Real LATRA delivery is blocked.']);
+                break;
             }
             $ch = curl_init(LATRA_API_URL);
             curl_setopt_array($ch, [
@@ -740,8 +790,8 @@ $validationErrors = LatraMapper::validatePayload($payload);
             $failCount = 0;
             sendSse(['type' => 'init', 'total' => $total, 'message' => 'Connected. Starting vehicle fetch...']);
 
-            $wialon = new WialonAPI();
-            if (!$wialon->login()) {
+            $wialon = RelayRuntime::enabled() ? null : new WialonAPI();
+            if ($wialon !== null && !$wialon->login()) {
                 sendSse(['type' => 'error', 'message' => 'Wialon login failed']);
                 break;
             }
@@ -758,6 +808,13 @@ $validationErrors = LatraMapper::validatePayload($payload);
                 }
 
                 try {
+                    if (RelayRuntime::enabled()) {
+                        $collected = RelayRuntime::poll($vehicle, 86400, 100);
+                        sendSse(['type' => 'progress', 'current' => $i + 1, 'total' => $total,
+                            'vehicle' => $vehicle['vehicle_reg_no'], 'status' => 'ok'] + $collected);
+                        $successCount++;
+                        continue;
+                    }
                     $to = time();
                     $from = $to - 86400;
                     $messages = $wialon->getMessages((int)$vehicle['wialon_unit_id'], $from, $to, 100);
@@ -812,7 +869,7 @@ $addonCustom = [];
                 }
             }
 
-            $wialon->logout();
+            $wialon?->logout();
             sendSse(['type' => 'done', 'success' => $successCount, 'failed' => $failCount]);
             break;
 
@@ -846,13 +903,24 @@ $addonCustom = [];
                     $latest = Database::fetch("SELECT * FROM message_log WHERE vehicle_id = ? ORDER BY wialon_msg_time DESC LIMIT 1", [$vid]);
                     $source = $latest ?: $vehicle;
                     $params = $latest ? extractWialonParams($latest) : [];
-$addonCustom = [];
-                if ($aid === EventDetector::ENGINE_OFF) {
-                    $addonCustom = LatraMapper::buildTripStats($vid, (int) ($source['wialon_msg_time'] ?? $latest['wialon_msg_time'] ?? time()));
-                }
-                $addonInfo = LatraMapper::buildAddonInfo($aid, $params, $addonCustom) ?? [];
+                    $addonCustom = [];
+                    if ($aid === EventDetector::ENGINE_OFF) {
+                        $addonCustom = LatraMapper::buildTripStats($vid, (int) ($source['wialon_msg_time'] ?? $latest['wialon_msg_time'] ?? time()));
+                    }
+                    $addonInfo = LatraMapper::buildAddonInfo($aid, $params, $addonCustom) ?? [];
                     $fuelInfo = $aid === 16 ? LatraMapper::buildFuelInfo($params) : [];
                     $payload = LatraMapper::buildPayload($vehicle, $source, $aid, $addonInfo, $fuelInfo);
+                    if (RelayRuntime::enabled()) {
+                        $result = queueRelayPayload($vehicle, $payload);
+                        $latraStatus = ($result['success'] ?? false) ? 'queued' : 'fail';
+                        sendSse([
+                            'type' => 'progress', 'current' => $i + 1, 'total' => $total,
+                            'vehicle' => $vehicle['vehicle_reg_no'], 'latra_status' => $latraStatus,
+                            'message' => $result['message'] ?? 'Saved to the durable relay. Real LATRA delivery is blocked.'
+                        ]);
+                        if ($latraStatus === 'queued') $successCount++; else $failCount++;
+                        continue;
+                    }
                     $payloadJson = json_encode($payload);
 
                     $ch = curl_init(LATRA_API_URL);

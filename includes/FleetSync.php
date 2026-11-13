@@ -2,6 +2,8 @@
 /**
  * Fleet sync.
  */
+use Latra\Application\Collection\RelayPayloadMapper;
+
 class FleetSync {
     public static function connector(): WialonAPI {
         return new WialonAPI(Vault::wialonUrl() ?: WIALON_BASE_URL, Vault::wialonToken() ?: WIALON_TOKEN);
@@ -67,6 +69,9 @@ class FleetSync {
     }
 
     public static function pollVehicle(array $vehicle, int $windowSeconds = 180, int $limit = 50): array {
+        if (defined('DELIVERY_ARCHITECTURE') && DELIVERY_ARCHITECTURE === 'relay') {
+            return RelayRuntime::poll($vehicle, $windowSeconds, $limit);
+        }
         $wialon = self::connector();
         if (!$wialon->login()) {
             throw new RuntimeException('Wialon login failed');
@@ -80,5 +85,27 @@ class FleetSync {
         $messages = $wialon->getMessages((int) $vehicle['wialon_unit_id'], $from, $to, $limit);
         $wialon->logout();
         return IngestPipeline::ingestVehicle($vehicle, $messages);
+    }
+
+    /** Compatibility wrapper returning the queued count from a complete relay window. */
+    public static function collectRelayVehicle(array $vehicle, DurableRelay $relay, RelayPayloadMapper $mapper,
+        int $from, int $to, int $pageSize, int $maxRecords, int $maxBytes, ?WialonAPI $wialon = null, string $stream = ''): int {
+        return self::collectRelayWindow($vehicle, $relay, $mapper, $from, $to, $pageSize, $maxRecords, $maxBytes, $wialon, $stream)['queued'];
+    }
+
+    public static function collectRelayWindow(array $vehicle, DurableRelay $relay, RelayPayloadMapper $mapper,
+        int $from, int $to, int $pageSize, int $maxRecords, int $maxBytes, ?WialonAPI $wialon = null, string $stream = ''): array {
+        $source = new \Latra\Infrastructure\Wialon\WialonMessageWindowSource($wialon ?? self::connector());
+        $useCase = new \Latra\Application\Collection\CollectRelayWindow($source, $relay);
+        return $useCase->collect(
+            (int) $vehicle['wialon_unit_id'],
+            'wialon:' . $vehicle['wialon_unit_id'] . $stream,
+            $from,
+            $to,
+            $pageSize,
+            $maxRecords,
+            $maxBytes,
+            [$mapper, 'map'],
+        );
     }
 }

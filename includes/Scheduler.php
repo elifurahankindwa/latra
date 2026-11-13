@@ -212,6 +212,9 @@ class Scheduler {
 
     /** Drain small candidate pages without claiming work that cannot start in time. */
     private static function jobFlush(bool $emergencyOnly): int {
+        if (defined('DELIVERY_ARCHITECTURE') && DELIVERY_ARCHITECTURE === 'relay') {
+            return RelayRuntime::flush($emergencyOnly ? 40 : 80, $emergencyOnly, 120);
+        }
         $started = hrtime(true);
         $budget = 120; // The original two-minute budget applies to both flush modes.
         $limit = $emergencyOnly ? 40 : 80;
@@ -254,8 +257,8 @@ class Scheduler {
 
     private static function jobFuelReport(): int {
         $vehicles = Database::fetchAll(
-            "SELECT id, wialon_unit_id, name, fuel_level_sensor
-             FROM vehicles
+            "SELECT v.*
+             FROM vehicles v
              WHERE is_active = 1 AND wialon_unit_id > 0
                AND fuel_level_sensor IS NOT NULL AND fuel_level_sensor <> ''"
         );
@@ -263,57 +266,110 @@ class Scheduler {
             return 0;
         }
 
+        $wialon = FleetSync::connector();
+        if (!$wialon->login()) {
+            throw new RuntimeException('Wialon login failed for fuel report');
+        }
+
         $pushCount = 0;
         $skipped = 0;
-        foreach ($vehicles as $veh) {
-            $unitId = (int) $veh['wialon_unit_id'];
-            $data = WialonAPI::getUnitData($unitId);
-            if (!is_array($data)) {
-                $skipped++;
-                Logger::info('fuel.skipped', [
-                    'vehicle_id' => $veh['id'],
-                    'reason'     => 'no_unit_data',
-                    'unit_id'    => $unitId,
-                ]);
-                continue;
-            }
+        try {
+            foreach ($vehicles as $veh) {
+                $unitId = (int) $veh['wialon_unit_id'];
+                $data = $wialon->getUnitData($unitId);
+                if (!is_array($data)) {
+                    $skipped++;
+                    Logger::info('fuel.skipped', [
+                        'vehicle_id' => $veh['id'],
+                        'reason'     => 'no_unit_data',
+                        'unit_id'    => $unitId,
+                    ]);
+                    continue;
+                }
 
-            $fuelValue = null;
-            $fuelUnit = null;
-            foreach (($data['sens'] ?? []) as $sens) {
-                $t = (string) ($sens['t'] ?? '');
-                if ($t === (string) $veh['fuel_level_sensor']) {
-                    $fuelValue = $sens['v'] ?? null;
-                    $fuelUnit = $sens['u'] ?? null;
-                    break;
+                $fuelValue = null;
+                $fuelUnit = null;
+                foreach (($data['sens'] ?? []) as $sens) {
+                    $t = (string) ($sens['t'] ?? '');
+                    if ($t === (string) $veh['fuel_level_sensor']) {
+                        $fuelValue = $sens['v'] ?? null;
+                        $fuelUnit = $sens['u'] ?? null;
+                        break;
+                    }
+                }
+                if ($fuelValue === null || $fuelValue === '') {
+                    $skipped++;
+                    Logger::info('fuel.skipped', [
+                        'vehicle_id' => $veh['id'],
+                        'reason'     => 'no_live_fuel_value',
+                        'unit_id'    => $unitId,
+                        'sensor'     => $veh['fuel_level_sensor'],
+                    ]);
+                    continue;
+                }
+
+                $position = $data['pos'] ?? null;
+                if (!is_array($position) || !isset($position['t'], $position['x'], $position['y'])
+                    || !is_numeric($position['t']) || !is_numeric($position['x']) || !is_numeric($position['y'])
+                    || (int) $position['t'] <= 0) {
+                    $skipped++;
+                    Logger::info('fuel.skipped', [
+                        'vehicle_id' => $veh['id'],
+                        'reason'     => 'no_live_position',
+                        'unit_id'    => $unitId,
+                    ]);
+                    continue;
+                }
+
+                $source = [
+                    'wialon_msg_time' => (int) $position['t'],
+                    'lat' => $position['y'],
+                    'lng' => $position['x'],
+                    'altitude' => $position['z'] ?? null,
+                    'speed' => $position['s'] ?? null,
+                    'bearing' => $position['c'] ?? null,
+                    'satellite_count' => $position['sc'] ?? null,
+                ];
+                $payload = LatraMapper::buildPayload(
+                    $veh, $source, EventDetector::FUEL_REPORT,
+                    [],
+                    ['fuel_level' => $fuelValue, 'fuel_sensor_param' => $veh['fuel_level_sensor'], 'unit' => $fuelUnit]
+                );
+                if (RelayRuntime::enabled()) {
+                    try {
+                        $result = RelayRuntime::queueForVehicle($payload, (int) $veh['id']);
+                        if (!empty($result['success'])) {
+                            $pushCount++;
+                        } else {
+                            $skipped++;
+                            Logger::warn('fuel.queue_failed', [
+                                'vehicle_id' => $veh['id'],
+                                'error' => $result['message'] ?? 'unknown',
+                            ]);
+                        }
+                        continue;
+                    } catch (Throwable $e) {
+                        $skipped++;
+                        Logger::warn('fuel.queue_failed', [
+                            'vehicle_id' => $veh['id'],
+                            'error' => $e->getMessage(),
+                        ]);
+                        continue;
+                    }
+                }
+                $result = LatraAdapter::submit($payload, 'fuel-report-' . $veh['id'] . '-' . floor(time() / 1800));
+                if (!empty($result['ok']) || !empty($result['skipped'])) {
+                    $pushCount++;
+                } else {
+                    $skipped++;
+                    Logger::warn('fuel.push_failed', [
+                        'vehicle_id' => $veh['id'],
+                        'error'      => $result['curlError'] ?? ($result['response'] ?? 'unknown'),
+                    ]);
                 }
             }
-            if ($fuelValue === null || $fuelValue === '') {
-                $skipped++;
-                Logger::info('fuel.skipped', [
-                    'vehicle_id' => $veh['id'],
-                    'reason'     => 'no_live_fuel_value',
-                    'unit_id'    => $unitId,
-                    'sensor'     => $veh['fuel_level_sensor'],
-                ]);
-                continue;
-            }
-
-            $payload = LatraMapper::buildPayload(
-                $veh, $veh, EventDetector::FUEL_REPORT,
-                [],
-                ['fuel_level' => $fuelValue, 'fuel_sensor_param' => $veh['fuel_level_sensor'], 'unit' => $fuelUnit]
-            );
-            $result = LatraAdapter::submit($payload, 'fuel-report-' . $veh['id'] . '-' . floor(time() / 1800));
-            if (!empty($result['ok']) || !empty($result['skipped'])) {
-                $pushCount++;
-            } else {
-                $skipped++;
-                Logger::warn('fuel.push_failed', [
-                    'vehicle_id' => $veh['id'],
-                    'error'      => $result['curlError'] ?? ($result['response'] ?? 'unknown'),
-                ]);
-            }
+        } finally {
+            $wialon->logout();
         }
         Logger::info('fuel.report', ['pushed' => $pushCount, 'skipped' => $skipped]);
         return $pushCount;

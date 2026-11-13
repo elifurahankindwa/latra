@@ -10,6 +10,19 @@ class LatraAdapter {
 
     /** Coordinate all adapter callers through the same persisted delivery key. */
     public static function submit(array $payload, string $idempotencyKey = '', ?int $remainingSeconds = null): array {
+        if (defined('DELIVERY_ARCHITECTURE') && DELIVERY_ARCHITECTURE === 'relay') {
+            return [
+                'payload' => $payload,
+                'response' => 'Relay mode active; direct LATRA submission is disabled.',
+                'responseData' => [],
+                'httpCode' => 0,
+                'latency' => 0,
+                'ok' => false,
+                'curlError' => 'Relay mode active',
+                'attempted' => false,
+                'deferred' => true,
+            ];
+        }
         return Delivery::submit($payload, $idempotencyKey,
             static fn(array $body, callable $started): array => self::sendHttp($body, $idempotencyKey, $started, $remainingSeconds));
     }

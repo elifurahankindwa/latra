@@ -1,504 +1,109 @@
 <?php
 /**
- * LATRA mapper.
+ * Compatibility adapter for LATRA mapping and trip-stat persistence.
  */
-class LatraMapper {
+use Latra\Domain\Ingestion\LatraPayloadPolicy;
 
-    /** Named activity constants (mirror ACTIVITIES). */
-    const ACTIVITY_MOVEMENT        = 1;
-    const ACTIVITY_ENGINE_ON       = 2;
-    const ACTIVITY_ENGINE_OFF      = 3;
-    const ACTIVITY_SPEEDING        = 4;
-    const ACTIVITY_HASH_BRAKING    = 5;
-    const ACTIVITY_HASH_TURNING    = 6;
-    const ACTIVITY_HASH_ACCEL      = 7;
-    const ACTIVITY_PANIC_DRIVER    = 8;
-    const ACTIVITY_BATTERY_LOW     = 9;
-    const ACTIVITY_POWER_DISCONNECT= 10;
-    const ACTIVITY_EXCESSIVE_IDLE  = 11;
-    const ACTIVITY_ACCIDENT        = 12;
-    const ACTIVITY_PANIC_PASSENGER = 13;
-    const ACTIVITY_TAMPERING       = 14;
-    const ACTIVITY_BLACK_BOX       = 15;
-    const ACTIVITY_FUEL_REPORT     = 16;
-    const ACTIVITY_INVALID_SCAN    = 17;
-    const ACTIVITY_ENGINE_START    = 18;
-    const ACTIVITY_ENGINE_STOP     = 19;
-    const ACTIVITY_ENTER_BOUNDARY  = 20;
-    const ACTIVITY_LEAVE_BOUNDARY  = 21;
-    const ACTIVITY_ENTER_CHECKPOINT = 22;
-    const ACTIVITY_LEAVE_CHECKPOINT = 23;
-    const ACTIVITY_IBUTTON_REGULAR = 24;
+require_once __DIR__ . '/autoload.php';
 
-    /**
-     * Activity ID definitions per LATRA spec
-     */
-    const ACTIVITIES = [
-        1  => 'Movement/Logging',
-        2  => 'Engine ON',
-        3  => 'Engine OFF',
-        4  => 'Speeding',
-        5  => 'Hash Braking',
-        6  => 'Hash Turning',
-        7  => 'Hash Acceleration',
-        8  => 'Panic Button (Driver)',
-        9  => 'Internal Battery Low',
-        10 => 'External Power Disconnected',
-        11 => 'Excessive Idle',
-        12 => 'Accident',
-        13 => 'Panic Button (Passenger)',
-        14 => 'Device Tampering',
-        15 => 'Black Box Data Logging',
-        16 => 'Fuel Data Report',
-        17 => 'Invalid Scan',
-        18 => 'Engine Start',
-        19 => 'Engine Stop',
-        20 => 'Enter Boundary',
-        21 => 'Leave Boundary',
-        22 => 'Enter Checkpoint',
-        23 => 'Leave Checkpoint',
-        24 => 'iButton Scan (Regular)'
-    ];
+class LatraMapper
+{
+    public const ACTIVITY_MOVEMENT = LatraPayloadPolicy::ACTIVITY_MOVEMENT;
+    public const ACTIVITY_ENGINE_ON = LatraPayloadPolicy::ACTIVITY_ENGINE_ON;
+    public const ACTIVITY_ENGINE_OFF = LatraPayloadPolicy::ACTIVITY_ENGINE_OFF;
+    public const ACTIVITY_SPEEDING = LatraPayloadPolicy::ACTIVITY_SPEEDING;
+    public const ACTIVITY_HASH_BRAKING = LatraPayloadPolicy::ACTIVITY_HASH_BRAKING;
+    public const ACTIVITY_HASH_TURNING = LatraPayloadPolicy::ACTIVITY_HASH_TURNING;
+    public const ACTIVITY_HASH_ACCEL = LatraPayloadPolicy::ACTIVITY_HASH_ACCEL;
+    public const ACTIVITY_PANIC_DRIVER = LatraPayloadPolicy::ACTIVITY_PANIC_DRIVER;
+    public const ACTIVITY_BATTERY_LOW = LatraPayloadPolicy::ACTIVITY_BATTERY_LOW;
+    public const ACTIVITY_POWER_DISCONNECT = LatraPayloadPolicy::ACTIVITY_POWER_DISCONNECT;
+    public const ACTIVITY_EXCESSIVE_IDLE = LatraPayloadPolicy::ACTIVITY_EXCESSIVE_IDLE;
+    public const ACTIVITY_ACCIDENT = LatraPayloadPolicy::ACTIVITY_ACCIDENT;
+    public const ACTIVITY_PANIC_PASSENGER = LatraPayloadPolicy::ACTIVITY_PANIC_PASSENGER;
+    public const ACTIVITY_TAMPERING = LatraPayloadPolicy::ACTIVITY_TAMPERING;
+    public const ACTIVITY_BLACK_BOX = LatraPayloadPolicy::ACTIVITY_BLACK_BOX;
+    public const ACTIVITY_FUEL_REPORT = LatraPayloadPolicy::ACTIVITY_FUEL_REPORT;
+    public const ACTIVITY_INVALID_SCAN = LatraPayloadPolicy::ACTIVITY_INVALID_SCAN;
+    public const ACTIVITY_ENGINE_START = LatraPayloadPolicy::ACTIVITY_ENGINE_START;
+    public const ACTIVITY_ENGINE_STOP = LatraPayloadPolicy::ACTIVITY_ENGINE_STOP;
+    public const ACTIVITY_ENTER_BOUNDARY = LatraPayloadPolicy::ACTIVITY_ENTER_BOUNDARY;
+    public const ACTIVITY_LEAVE_BOUNDARY = LatraPayloadPolicy::ACTIVITY_LEAVE_BOUNDARY;
+    public const ACTIVITY_ENTER_CHECKPOINT = LatraPayloadPolicy::ACTIVITY_ENTER_CHECKPOINT;
+    public const ACTIVITY_LEAVE_CHECKPOINT = LatraPayloadPolicy::ACTIVITY_LEAVE_CHECKPOINT;
+    public const ACTIVITY_IBUTTON_REGULAR = LatraPayloadPolicy::ACTIVITY_IBUTTON_REGULAR;
+    public const ACTIVITIES = LatraPayloadPolicy::ACTIVITIES;
+    public const HARDWARE_FAULTS = LatraPayloadPolicy::HARDWARE_FAULTS;
 
-    /**
-     * Hardware fault codes per LATRA Table 2
-     */
-    const HARDWARE_FAULTS = [
-        0 => 'No Fault',
-        1 => 'Probe Cable Failed (connection fail)',
-        2 => 'Probe Cable Intermediate (connection lose)',
-        3 => 'Reserved',
-        4 => 'Sensor Coupling Layer abnormal',
-        5 => 'Detected fuel level zero',
-        6 => 'Reserved',
-        7 => 'Reserved',
-        8 => 'Reserved',
-        9 => 'Reserved'
-    ];
-
-    /**
-     * Map Wialon unit data to LATRA vehicle record
-     */
-    public static function mapVehicle(array $wialonUnit): array {
-        $pos = $wialonUnit['pos'] ?? [];
-        $lmsg = $wialonUnit['lmsg'] ?? [];
-        $params = $lmsg['p'] ?? [];
-
-        // Use last message position if available, otherwise use pos
-        $source = !empty($lmsg['pos']) ? $lmsg['pos'] : $pos;
-
-        return [
-            'wialon_unit_id' => $wialonUnit['id'] ?? null,
-            'vehicle_reg_no' => self::extractRegNo($wialonUnit),
-            'name' => $wialonUnit['nm'] ?? null,
-            'imei' => $wialonUnit['uid'] ?? $wialonUnit['uid2'] ?? null,
-            'hw_type' => $wialonUnit['hw'] ?? null,
-            'phone' => $wialonUnit['ph'] ?? null,
-            'lat' => isset($source['y']) ? round((float)$source['y'], 8) : null,
-            'lng' => isset($source['x']) ? round((float)$source['x'], 8) : null,
-            'altitude' => isset($source['z']) ? (int)$source['z'] : null,
-            'speed' => isset($source['s']) ? round((float)$source['s'], 2) : null,
-            'bearing' => isset($source['c']) ? round((float)$source['c'], 2) : null,
-            'satellite_count' => isset($source['sc']) ? (int)$source['sc'] : null,
-            'hdop' => isset($params['hdop']) ? round((float)$params['hdop'], 2) : null,
-            'd2d3' => self::detect2D3D($source),
-            'rssi' => isset($params['rssi']) ? (int)$params['rssi'] : (isset($params['gsm']) ? (int)$params['gsm'] : null),
-            'lac' => isset($params['lac']) ? (int)$params['lac'] : (isset($params['gsm_lac']) ? (int)$params['gsm_lac'] : (isset($params['lbs_lac']) ? (int)$params['lbs_lac'] : null)),
-            'cell_id' => isset($params['cell_id']) ? (int)$params['cell_id'] : (isset($params['cellid']) ? (int)$params['cellid'] : (isset($params['cid']) ? (int)$params['cid'] : (isset($params['gsm_cellid']) ? (int)$params['gsm_cellid'] : (isset($params['gsm_cell_id']) ? (int)$params['gsm_cell_id'] : null)))),
-            'mcc' => isset($params['mcc']) ? (int)$params['mcc'] : null,
-            'mgs_id' => isset($lmsg['t']) ? (int)$lmsg['t'] : (isset($pos['t']) ? (int)$pos['t'] : null),
-            'last_message_time' => isset($lmsg['t']) ? (int)$lmsg['t'] : (isset($pos['t']) ? (int)$pos['t'] : null),
-        ];
+    public static function mapVehicle(array $wialonUnit): array
+    {
+        return LatraPayloadPolicy::mapVehicle($wialonUnit);
     }
 
-    /**
-     * Build LATRA API payload for a specific activity
-     * CRITICAL: All required LATRA item fields must be present.
-     */
-    public static function buildPayload(array $vehicle, array $message, int $activityId, array $addonInfo = [], array $fuelInfo = []): array {
-        $timestamp = self::toEpochMs($message['wialon_msg_time'] ?? $message['last_message_time'] ?? $vehicle['last_message_time'] ?? time());
-
-        // Core payload — never replace an unavailable field with a fabricated value.
-        // Unknown fields stay null so downstream validation can flag them as gaps,
-        // and so LATRA receives genuine data only (per compliance requirements).
-        $item = [
-            'latitude'           => self::fmt($message['lat'] ?? $vehicle['lat'] ?? null, 'string'),
-            'longitude'          => self::fmt($message['lng'] ?? $vehicle['lng'] ?? null, 'string'),
-            'altitude'           => self::fmt($message['altitude'] ?? $vehicle['altitude'] ?? null, 'string'),
-            'timestamp'          => self::fmt($timestamp, 'string'),
-            'horizontal_speed'   => self::fmt($message['speed'] ?? $vehicle['speed'] ?? null, 'string'),
-            'vertical_speed'     => self::fmt($message['vertical_speed'] ?? $vehicle['vertical_speed'] ?? null, 'string'),
-            'bearing'            => self::fmt($message['bearing'] ?? $vehicle['bearing'] ?? null, 'string'),
-            'satellite_count'    => self::fmt($message['satellite_count'] ?? $vehicle['satellite_count'] ?? null, 'string'),
-            'HDOP'               => self::fmt($message['hdop'] ?? $vehicle['hdop'] ?? null, 'string'),
-            'd2d3'               => self::fmt($message['d2d3'] ?? $vehicle['d2d3'] ?? null, 'string'),
-            'RSSI'               => self::fmt($message['rssi'] ?? $vehicle['rssi'] ?? null, 'string'),
-            'LAC'                => self::fmt($message['lac'] ?? $vehicle['lac'] ?? null, 'string'),
-            'Cell_ID'            => self::fmt($message['cell_id'] ?? $vehicle['cell_id'] ?? null, 'string'),
-            'MGS_ID'             => self::fmt($message['mgs_id'] ?? $vehicle['mgs_id'] ?? null, 'string'),
-            'MCC'                => self::fmt($message['mcc'] ?? $vehicle['mcc'] ?? null, 'string'),
-            'activity_id'        => (string)$activityId,
-        ];
-
-        $odometer = $message['odometer'] ?? $vehicle['odometer'] ?? null;
-        if ($odometer !== null && $odometer !== '') {
-            $item['odometer'] = self::fmt($odometer, 'string');
-        }
-
-        if (!empty($addonInfo) && in_array($activityId, [2, 3, 4, 9, 10, 11, 14, 16, 17, 24], true)) {
-            $item['addon_info'] = $addonInfo;
-        }
-
-        if ($activityId === 16 && !empty($fuelInfo)) {
-            $item['fuel_info'] = $fuelInfo;
-        }
-
-        $payload = [
-            'vehicle_reg_no' => $vehicle['vehicle_reg_no'] ?? null,
-            'type'           => 'poi',
-            'imei'           => $vehicle['imei'] ?: null,
-            'items'          => [$item]
-        ];
-
-        return $payload;
+    public static function buildPayload(
+        array $vehicle,
+        array $message,
+        int $activityId,
+        array $addonInfo = [],
+        array $fuelInfo = [],
+    ): array {
+        return LatraPayloadPolicy::buildPayload($vehicle, $message, $activityId, $addonInfo, $fuelInfo);
     }
 
-    /**
-     * Build addon_info for specific activities
-     */
-    public static function buildAddonInfo(int $activityId, array $wialonParams = [], array $customData = []): ?array {
-        switch ($activityId) {
-            case 2: // Engine ON
-                return [
-                    'idleTime'                    => self::fmt($customData['idleTime'] ?? $wialonParams['idle_time'] ?? null, 'string', '0'),
-                    'v_driver_identification_no' => self::fmt($customData['driverId'] ?? $wialonParams['driver_id'] ?? $wialonParams['tco_driver1_id'] ?? $wialonParams['pass'] ?? null, 'string', 'FFFFFFFFFFFFFFFF')
-                ];
-
-            case 3: // Engine OFF (Trip End)
-                return [
-                    'distance_travelled' => self::fmt($customData['distance'] ?? $wialonParams['mileage'] ?? $wialonParams['mil'] ?? null, 'string', '0'),
-                    'trip_duration'      => self::fmt($customData['duration'] ?? $wialonParams['tco_activity_tm'] ?? null, 'string', '0'),
-                    'avgSpeed'           => self::fmt($customData['avgSpeed'] ?? null, 'string', '0'),
-                    'maxSpeed'           => self::fmt($customData['maxSpeed'] ?? null, 'string', '0')
-                ];
-
-            case 9:  // Internal Battery Low
-            case 10: // External Power Disconnected
-                $extVolt = $customData['extVolt'] ?? $wialonParams['pwr_ext'] ?? $wialonParams['ext_power'] ?? $wialonParams['io_66'] ?? null;
-                $intVolt = $customData['intVolt'] ?? $wialonParams['pwr_int'] ?? $wialonParams['int_battery'] ?? $wialonParams['io_67'] ?? null;
-
-                if ($extVolt === null || $extVolt === '') {
-                    Logger::info('voltage.skip', [
-                        'field'  => 'ext_power_voltage',
-                        'reason' => 'no_live_value',
-                    ]);
-                    $extVolt = null;
-                }
-                if ($intVolt === null || $intVolt === '') {
-                    Logger::info('voltage.skip', [
-                        'field'  => 'int_battery_voltage',
-                        'reason' => 'no_live_value',
-                    ]);
-                    $intVolt = null;
-                }
-
-                $out = [];
-                if ($extVolt !== null && $extVolt !== '') {
-                    $out['ext_power_voltage'] = self::fmt($extVolt, 'string');
-                }
-                if ($intVolt !== null && $intVolt !== '') {
-                    $out['int_battery_voltage'] = self::fmt($intVolt, 'string');
-                }
-                return empty($out) ? null : $out;
-
-            case 16: // Fuel Data Report
-                return null; // fuel_info is separate
-
-            case 17: // Invalid Scan
-            case 24: // iButton Scan (Regular)
-                return [
-                    'v_driver_identification_no' => self::fmt(
-                        $customData['driverId'] ?? $wialonParams['driver_id'] ?? $wialonParams['tco_driver1_id'] ?? $wialonParams['pass'] ?? 'FFFFFFFFFFFFFFFF',
-                        'string'
-                    )
-                ];
-
-            default:
-                return null;
-        }
-    }
-
-    /**
-     * Build fuel_info object for activity 16
-     */
-    public static function buildFuelInfo(array $wialonParams = [], array $customData = []): array {
-        $fuelLevel = $customData['fuelLevel'] ?? $wialonParams['fuel'] ?? $wialonParams['fuel_level'] ?? null;
-        $rtFuelLevel = $customData['rtFuelLevel'] ?? $wialonParams['rt_fuel'] ?? $fuelLevel;
-
-        return [
-            'validFlag'    => self::fmt($customData['validFlag'] ?? '0', 'string'),
-            'signalLevel'  => self::fmt($customData['signalLevel'] ?? $wialonParams['fuel_signal'] ?? '75', 'string'),
-            'softStatus'   => self::fmt($customData['softStatus'] ?? '0', 'string'),
-            'hardFault'    => self::fmt($customData['hardFault'] ?? '0', 'string'),
-            'fuelLevel'    => self::fmt($fuelLevel !== null ? (int)($fuelLevel * 10) : null, 'string', '0'),
-            'rtFuelLevel'  => self::fmt($rtFuelLevel !== null ? (int)($rtFuelLevel * 10) : null, 'string', '0'),
-            'tankTemp'     => self::fmt($customData['tankTemp'] ?? $wialonParams['tank_temp'] ?? null, 'string', '0'),
-            'channel'      => self::fmt($customData['channel'] ?? '1', 'string')
-        ];
-    }
-
-    /**
-     * Detect activity from Wialon message parameters
-     */
-    public static function detectActivity(array $wialonParams, array $previousState = []): int {
-        // Check for specific events in parameters
-        if (isset($wialonParams['event'])) {
-            $event = strtolower((string)$wialonParams['event']);
-
-            $eventMap = [
-                'engine_on' => 2, 'engine start' => 2, 'ignition_on' => 2,
-                'engine_off' => 3, 'engine stop' => 3, 'ignition_off' => 3,
-                'speeding' => 4, 'overspeed' => 4,
-                'harsh_braking' => 5, 'harshbrake' => 5,
-                'harsh_turning' => 6, 'harsturn' => 6,
-                'harsh_acceleration' => 7, 'harshaccel' => 7,
-                'panic' => 8, 'sos' => 8, 'alarm' => 8,
-                'battery_low' => 9, 'low_battery' => 9,
-                'power_disconnected' => 10, 'ext_power_off' => 10,
-                'excessive_idle' => 11, 'long_idle' => 11,
-                'accident' => 12, 'crash' => 12,
-                'passenger_panic' => 13,
-                'tamper' => 14, 'tampering' => 14, 'antenna_cut' => 14,
-                'black_box' => 15,
-                'fuel' => 16, 'fuel_data' => 16,
-                'invalid_scan' => 17, 'invalid_ibutton' => 17,
-                'boundary_enter' => 20, 'geofence_in' => 20,
-                'boundary_exit' => 21, 'geofence_out' => 21,
-                'checkpoint_enter' => 22,
-                'checkpoint_exit' => 23,
-                'ibutton' => 24, 'driver_scan' => 24
-            ];
-
-            foreach ($eventMap as $key => $activityId) {
-                if (strpos($event, $key) !== false) {
-                    return $activityId;
-                }
+    public static function buildAddonInfo(int $activityId, array $wialonParams = [], array $customData = []): ?array
+    {
+        if (in_array($activityId, [9, 10], true)) {
+            $external = $customData['extVolt'] ?? $wialonParams['pwr_ext'] ?? $wialonParams['ext_power'] ?? $wialonParams['io_66'] ?? null;
+            $internal = $customData['intVolt'] ?? $wialonParams['pwr_int'] ?? $wialonParams['int_battery'] ?? $wialonParams['io_67'] ?? null;
+            if ($external === null || $external === '') {
+                Logger::info('voltage.skip', ['field' => 'ext_power_voltage', 'reason' => 'no_live_value']);
+            }
+            if ($internal === null || $internal === '') {
+                Logger::info('voltage.skip', ['field' => 'int_battery_voltage', 'reason' => 'no_live_value']);
             }
         }
-
-        // Check for iButton/pass parameter
-        if (isset($wialonParams['pass']) || isset($wialonParams['tco_driver1_id'])) {
-            return 24;
-        }
-
-        // Check for fuel data
-        if (isset($wialonParams['fuel']) || isset($wialonParams['fuel_level'])) {
-            return 16;
-        }
-
-        // Default: Movement/Logging
-        return 1;
+        return LatraPayloadPolicy::buildAddonInfo($activityId, $wialonParams, $customData);
     }
 
-    /**
-     * Convert to epoch milliseconds (LATRA Note 2)
-     */
-    public static function toEpochMs($timestamp): string {
-        if (is_numeric($timestamp)) {
-            if (strlen((string)$timestamp) > 10) {
-                return (string)$timestamp; // Already in ms
-            }
-            return (string)((int)$timestamp * 1000);
-        }
-        if (is_string($timestamp)) {
-            $ts = strtotime($timestamp);
-            return $ts ? (string)($ts * 1000) : (string)(time() * 1000);
-        }
-        return (string)(time() * 1000);
+    public static function buildFuelInfo(array $wialonParams = [], array $customData = []): array
+    {
+        return LatraPayloadPolicy::buildFuelInfo($wialonParams, $customData);
     }
 
-    /**
-     * Check if activity requires addon_info
-     */
-    public static function activityRequiresAddon(int $activityId): bool {
-        return in_array($activityId, [2, 3, 4, 9, 10, 11, 14, 16, 17, 24], true);
+    public static function detectActivity(array $wialonParams, array $previousState = []): int
+    {
+        return LatraPayloadPolicy::detectActivity($wialonParams, $previousState);
     }
 
-    /**
-     * Extract registration number from Wialon unit
-     */
-    private static function extractRegNo(array $unit): string {
-        // Try custom fields first
-        $fields = $unit['flds'] ?? [];
-        foreach ($fields as $field) {
-            $name = strtolower($field['n'] ?? '');
-            if (in_array($name, ['reg_no', 'registration', 'plate', 'plate_no', 'vehicle_reg'])) {
-                return strtoupper(trim($field['v'] ?? ''));
-            }
-        }
-
-        // Try name as registration number
-        $name = strtoupper(trim($unit['nm'] ?? ''));
-        if (preg_match('/^[A-Z0-9\-]{3,20}$/', $name)) {
-            return $name;
-        }
-
-        // Use unit ID as fallback
-        return 'W' . ($unit['id'] ?? '00000');
+    public static function toEpochMs($timestamp): string
+    {
+        return LatraPayloadPolicy::toEpochMs($timestamp);
     }
 
-    /**
-     * Detect 2D/3D satellite mode from Wialon data
-     */
-    private static function detect2D3D(array $pos): ?int {
-        $flags = $pos['f'] ?? 0;
-        // If position flags indicate 3D fix
-        if ($flags & 0x02) {
-            return 3;
-        }
-        // If we have altitude data, likely 3D
-        if (isset($pos['z']) && $pos['z'] !== 0) {
-            return 3;
-        }
-        return 2;
+    public static function activityRequiresAddon(int $activityId): bool
+    {
+        return LatraPayloadPolicy::activityRequiresAddon($activityId);
     }
 
-    /**
-     * Format value - preserves null, converts types
-     */
-    private static function fmt($value, string $type, $default = null) {
-        if ($value === null || $value === '' || $value === 'null') {
-            return $default;
-        }
-
-        switch ($type) {
-            case 'int':
-                return (int)$value;
-            case 'float':
-                return round((float)$value, 2);
-            case 'string':
-            default:
-                return (string)$value;
-        }
+    public static function getActivityName(int $activityId): string
+    {
+        return LatraPayloadPolicy::getActivityName($activityId);
     }
 
-    /**
-     * Get activity name
-     */
-    public static function getActivityName(int $activityId): string {
-        return self::ACTIVITIES[$activityId] ?? 'Unknown';
+    public static function buildTripStats(int $vehicleId, int $engineOffMsgTime): array
+    {
+        return (new \Latra\Application\Ingestion\BuildTripStatistics(
+            new \Latra\Infrastructure\Persistence\PdoTripStatisticsRepository(Database::getInstance()),
+        ))->build($vehicleId, $engineOffMsgTime);
     }
 
-    /**
-     * Compute Engine OFF (activity 3) trip statistics from stored telemetry:
-     * distance (haversine over consecutive fixes), elapsed minutes, and
-     * average/max speed for the window since the last Engine ON event.
-     * Falls back to the prior 24h if no Engine ON marker exists.
-     */
-    public static function buildTripStats(int $vehicleId, int $engineOffMsgTime): array {
-        $start = Database::fetch(
-            "SELECT wialon_msg_time FROM message_log
-             WHERE vehicle_id = ? AND activity_id = ? AND wialon_msg_time < ?
-             ORDER BY wialon_msg_time DESC LIMIT 1",
-            [$vehicleId, 2, $engineOffMsgTime]
-        );
-        $from = $start ? (int) $start['wialon_msg_time'] : $engineOffMsgTime - 86400;
-
-        $rows = Database::fetchAll(
-            "SELECT lat, lng, speed FROM message_log
-             WHERE vehicle_id = ? AND wialon_msg_time >= ? AND wialon_msg_time <= ?
-             ORDER BY wialon_msg_time ASC",
-            [$vehicleId, $from, $engineOffMsgTime]
-        );
-
-        $distance = 0.0;
-        $speeds = [];
-        $maxSpeed = 0.0;
-        $prev = null;
-        foreach ($rows as $r) {
-            if (($r['speed'] ?? null) !== null) {
-                $s = (float) $r['speed'];
-                $speeds[] = $s;
-                $maxSpeed = max($maxSpeed, $s);
-            }
-            if ($prev !== null
-                && $r['lat'] !== null && $r['lng'] !== null
-                && $prev['lat'] !== null && $prev['lng'] !== null) {
-                $distance += self::haversineKm((float) $prev['lat'], (float) $prev['lng'], (float) $r['lat'], (float) $r['lng']);
-            }
-            $prev = $r;
-        }
-
-        return [
-            'distance' => round($distance, 2),
-            'duration' => round(max(0, $engineOffMsgTime - $from) / 60.0, 2),
-            'avgSpeed' => $speeds ? round(array_sum($speeds) / count($speeds), 2) : 0,
-            'maxSpeed' => $maxSpeed,
-        ];
+    public static function haversineKm(float $lat1, float $lng1, float $lat2, float $lng2): float
+    {
+        return LatraPayloadPolicy::haversineKm($lat1, $lng1, $lat2, $lng2);
     }
 
-    /** Great-circle distance in km between two coordinates (WGS-84 / haversine). */
-    public static function haversineKm(float $lat1, float $lng1, float $lat2, float $lng2): float {
-        $earthRadius = 6371.0;
-        $dLat = deg2rad($lat2 - $lat1);
-        $dLng = deg2rad($lng2 - $lng1);
-        $a = sin($dLat / 2) ** 2
-           + cos(deg2rad($lat1)) * cos(deg2rad($lat2)) * sin($dLng / 2) ** 2;
-        return 2 * $earthRadius * asin(sqrt($a));
-    }
-
-    /**
-     * Validate LATRA payload structure.
-     *
-     * Distinguishes core required fields (must be present and non-empty) from
-     * nullable fields (may be null when the source device does not report them).
-     * Values are NEVER auto-filled — a missing source simply yields null/absent.
-     */
-    public static function validatePayload(array $payload): array {
-        $errors = [];
-
-        if (empty($payload['vehicle_reg_no'])) {
-            $errors[] = 'vehicle_reg_no is required';
-        }
-        if (empty($payload['imei'])) {
-            $errors[] = 'imei is required';
-        }
-        if (empty($payload['items']) || !is_array($payload['items'])) {
-            $errors[] = 'items array is required';
-        } else {
-            $item = $payload['items'][0];
-
-            // Always required for a valid position/event record.
-            $required = ['latitude', 'longitude', 'timestamp', 'activity_id'];
-            foreach ($required as $field) {
-                if (!array_key_exists($field, $item) || $item[$field] === null || $item[$field] === '') {
-                    $errors[] = "items[0].$field is required";
-                }
-            }
-
-            // Optional / nullable — present and non-empty if available, else left null.
-            // These are not fabricated as '0' when the source is unknown.
-            $nullable = ['altitude', 'horizontal_speed', 'vertical_speed', 'bearing',
-                         'satellite_count', 'HDOP', 'd2d3', 'RSSI', 'LAC', 'Cell_ID', 'MGS_ID', 'MCC'];
-            foreach ($nullable as $field) {
-                if (array_key_exists($field, $item)
-                    && $item[$field] !== null && $item[$field] !== '') {
-                    $val = $item[$field];
-                    if (!is_numeric($val)) {
-                        $errors[] = "items[0].$field must be numeric";
-                    }
-                }
-            }
-
-            $activityId = (int)($item['activity_id'] ?? 0);
-            if (in_array($activityId, [2, 3, 4, 9, 10, 11, 14, 16, 17, 24], true) && empty($item['addon_info'])) {
-                $errors[] = "items[0].addon_info is required for activity $activityId";
-            }
-            if ($activityId === 16 && empty($item['fuel_info'])) {
-                $errors[] = "items[0].fuel_info is required for activity 16";
-            }
-        }
-
-        return $errors;
+    public static function validatePayload(array $payload): array
+    {
+        return LatraPayloadPolicy::validatePayload($payload);
     }
 }

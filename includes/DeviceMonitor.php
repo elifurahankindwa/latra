@@ -2,71 +2,30 @@
 /**
  * Device status monitor.
  */
+require_once __DIR__ . '/autoload.php';
+
 class DeviceMonitor {
 
     // Offline after 15 minutes without contact.
     const OFFLINE_SECONDS = 900;
 
     // Low battery warning level.
-    const BATTERY_LOW_MV = 3200;
+    const BATTERY_LOW_MV = \Latra\Domain\Ingestion\DeviceStatusPolicy::BATTERY_LOW_MV;
 
     // Low battery percent.
-    const BATTERY_LOW_PCT = 20;
+    const BATTERY_LOW_PCT = \Latra\Domain\Ingestion\DeviceStatusPolicy::BATTERY_LOW_PCT;
 
     // External power low level.
-    const EXT_POWER_LOW_MV = 1000;
+    const EXT_POWER_LOW_MV = \Latra\Domain\Ingestion\DeviceStatusPolicy::EXT_POWER_LOW_MV;
 
     // Update a device from the latest message.
     public static function updateFromMessage(int $vehicleId, array $params, int $commTime): void {
-        $prev = Database::fetch("SELECT * FROM device_status WHERE vehicle_id = ?", [$vehicleId]);
-
-        // Extract electric / power / tamper signals (Wialon param names vary).
-        $extPwrMv = self::mV($params['pwr_ext'] ?? $params['ext_power'] ?? $params['io_66'] ?? null);
-        $intBatMv = self::mV($params['pwr_int'] ?? $params['battery_charge'] ?? $params['io_67'] ?? null);
-        // Wialon units commonly report internal battery as a percentage (e.g. 72).
-        $intBatPct = self::pct($params['battery'] ?? $params['battery_pct'] ?? null);
-        $extPwrDisconnected = $extPwrMv !== null && $extPwrMv < self::EXT_POWER_LOW_MV && $extPwrMv > 0;
-        $batLow = ($intBatMv !== null && $intBatMv < self::BATTERY_LOW_MV && $intBatMv > 0)
-               || ($intBatPct !== null && $intBatPct < self::BATTERY_LOW_PCT);
-        $tampered = EventDetector::flagOn($params, ['tamper', 'tampering', 'antenna_cut', 'io_8']) === true;
-
-        $data = [
-            'is_online'                    => 1,
-            'online_at'                    => $prev['online_at'] ?? date(DATE_FORMAT),
-            'last_comm_time'               => $commTime,
-            'last_comm_at'                 => date(DATE_FORMAT, $commTime),
-            'last_gps_at'                  => $commTime,
-            'internal_battery_low'         => $batLow ? 1 : 0,
-            'internal_battery_mv'          => $intBatMv,
-            'internal_battery_pct'         => $intBatPct,
-            'external_power_disconnected'  => $extPwrDisconnected ? 1 : 0,
-            'external_power_mv'            => $extPwrMv,
-            'tampered'                     => $tampered ? 1 : 0,
-            'status_changed_at'            => date(DATE_FORMAT),
-        ];
-
-        $changed = false;
-        if ($prev) {
-            // Detect transitions for event generation.
-            if ((int)$prev['internal_battery_low'] !== (int)$data['internal_battery_low'] && $batLow) {
-                self::event($vehicleId, 'BATTERY_LOW', "Internal battery low ({$intBatMv} mV)");
-            }
-            if ((int)$prev['external_power_disconnected'] !== (int)$data['external_power_disconnected'] && $extPwrDisconnected) {
-                self::event($vehicleId, 'POWER_DISCONNECTED', "External power disconnected");
-            }
-            if ((int)$prev['tampered'] !== (int)$data['tampered'] && $tampered) {
-                self::event($vehicleId, 'TAMPERING', 'Device tampering detected');
-            }
-            $changed = $prev['is_online'] != $data['is_online'] || $prev['internal_battery_low'] != $data['internal_battery_low'] ||
-                       $prev['external_power_disconnected'] != $data['external_power_disconnected'] || $prev['tampered'] != $data['tampered'];
-            Database::update('device_status', $data, 'vehicle_id = ?', [$vehicleId]);
-        } else {
-            Database::insert('device_status', array_merge(['vehicle_id' => $vehicleId], $data));
-        }
-
-        if ($changed) {
-            self::statusLog($vehicleId, $data);
-        }
+        $useCase = new \Latra\Application\DeviceStatus\UpdateDeviceStatus(
+            new \Latra\Infrastructure\Persistence\LegacyDeviceStatusRepository(),
+            new \Latra\Infrastructure\Ingestion\LegacyDeviceStatusEffects(),
+            new \Latra\Infrastructure\Ingestion\LegacyDeviceStatusClock(),
+        );
+        $useCase->execute($vehicleId, $params, $commTime);
     }
 
     // Mark devices offline when they stop replying.
@@ -121,39 +80,9 @@ class DeviceMonitor {
     // Internal helpers
     // ------------------------------------------------------------------
 
-    // Convert voltage to millivolts.
-    private static function mV($value): ?float {
-        if ($value === null || $value === '' || !is_numeric($value)) return null;
-        $v = (float)$value;
-        // Wialon often reports V (e.g. 13.4) or mV (13425). Normalize to mV.
-        if ($v < 100) return round($v * 1000, 2);
-        return round($v, 2);
-    }
-
-    // Convert battery to percent.
-    private static function pct($value): ?float {
-        if ($value === null || $value === '' || !is_numeric($value)) return null;
-        $v = (float)$value;
-        // Some units report 0-1 fraction instead of 0-100.
-        if ($v > 0 && $v <= 1) $v *= 100;
-        return round(max(0, min(100, $v)), 2);
-    }
-
-    // Save a status change event.
     private static function event(int $vehicleId, string $type, string $detail): void {
-        Automation::log('device.status_change', ['vehicle' => $vehicleId, 'type' => $type, 'detail' => $detail]);
-        if (class_exists('Auth')) {
-            Auth::audit('device.' . strtolower($type), (string)$vehicleId, $detail, 'system');
-        }
+        (new \Latra\Infrastructure\Ingestion\LegacyDeviceStatusEffects())
+            ->recordTransition($vehicleId, $type, $detail);
     }
 
-    private static function statusLog(int $vehicleId, array $data): void {
-        Automation::log('device.status', [
-            'vehicle' => $vehicleId,
-            'online' => $data['is_online'],
-            'battery_low' => $data['internal_battery_low'],
-            'ext_power_off' => $data['external_power_disconnected'],
-            'tampered' => $data['tampered'],
-        ]);
-    }
 }

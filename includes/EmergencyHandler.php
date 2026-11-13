@@ -160,47 +160,41 @@ class EmergencyHandler {
 
     /**
      * Submit all pending emergency_queue records for a vehicle's active event
-     * to LATRA. Returns counts [submitted, failed, skipped].
+     * to LATRA. Returns counts [submitted, queued, failed, skipped].
      */
     public static function flushPending(array $event, int $vehicleId): array {
-        $rows = Database::fetchAll(
-            "SELECT * FROM emergency_queue WHERE event_id = ? AND latra_status = 'pending' ORDER BY wialon_msg_time ASC",
-            [$event['event_id']]
+        $useCase = new \Latra\Application\Emergency\FlushPendingEmergencyReports(
+            new \Latra\Infrastructure\Persistence\PdoEmergencyQueueRepository(Database::getInstance()),
+            static function (array $event, array $row, array $vehicle): array {
+                $payload = LatraMapper::buildPayload($vehicle, [
+                    'lat' => $row['lat'], 'lng' => $row['lng'], 'altitude' => $row['altitude'],
+                    'speed' => $row['speed'], 'bearing' => $row['bearing'],
+                    'satellite_count' => $row['satellite_count'], 'hdop' => $row['hdop'],
+                    'd2d3' => null, 'mgs_id' => $row['wialon_msg_time'],
+                    'wialon_msg_time' => $row['wialon_msg_time'],
+                ], (int) $event['activity_id']);
+                $payload['items'][0]['emergency_event_id'] = $event['event_id'];
+                return $payload;
+            },
+            static fn(array $payload, int $ownerVehicleId): array => self::pushPayload($payload, $ownerVehicleId),
         );
-        $vehicle = Database::fetch("SELECT id, vehicle_reg_no, imei FROM vehicles WHERE id = ?", [$vehicleId]);
-        $submitted = 0; $failed = 0; $skipped = 0;
-
-        foreach ($rows as $r) {
-            // Build a LATRA item with the emergency event reference.
-            $payload = LatraMapper::buildPayload(
-                $vehicle ?: [],
-                [
-                    'lat' => $r['lat'], 'lng' => $r['lng'], 'altitude' => $r['altitude'],
-                    'speed' => $r['speed'], 'bearing' => $r['bearing'], 'satellite_count' => $r['satellite_count'],
-                    'hdop' => $r['hdop'], 'd2d3' => null, 'mgs_id' => $r['wialon_msg_time'],
-                    'wialon_msg_time' => $r['wialon_msg_time'],
-                ],
-                (int)$event['activity_id']
-            );
-            // Attach emergency event reference (deduplication + traceability).
-            $payload['items'][0]['emergency_event_id'] = $event['event_id'];
-
-            $result = self::pushPayload($payload);
-            $relayStatus = $result['ok'] ? 'sent' : 'failed';
-
-            Database::update('emergency_queue', [
-                'latra_status'   => $relayStatus,
-                'latra_response' => $result['response'],
-                'submitted_at'   => date(DATE_FORMAT),
-            ], 'id = ?', [$r['id']]);
-
-            if ($result['ok']) $submitted++; else $failed++;
-        }
-        return ['submitted' => $submitted, 'failed' => $failed, 'skipped' => $skipped];
+        return $useCase->flush($event, $vehicleId);
     }
 
     /** Direct POST of a full LATRA payload (shared HTTP helper). */
-    public static function pushPayload(array $payload): array {
+    public static function pushPayload(array $payload, ?int $vehicleId = null): array {
+        if (defined('DELIVERY_ARCHITECTURE') && DELIVERY_ARCHITECTURE === 'relay') {
+            if (!class_exists('RelayRuntime', false) && !class_exists('RelayRuntime', true)) {
+                return ['ok' => false, 'response' => 'Relay queueing is unavailable in this runtime'];
+            }
+            try {
+                $result = RelayRuntime::queueForVehicle($payload, $vehicleId);
+                return ['ok' => !empty($result['success']), 'queued' => (int) ($result['queued'] ?? 0),
+                    'recorded' => true, 'response' => $result['message'] ?? 'queued for relay delivery'];
+            } catch (Throwable $e) {
+                return ['ok' => false, 'response' => $e->getMessage()];
+            }
+        }
         return LatraAdapter::submit($payload);
     }
 
