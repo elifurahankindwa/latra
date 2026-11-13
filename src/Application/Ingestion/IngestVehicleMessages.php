@@ -18,7 +18,7 @@ final class IngestVehicleMessages
     ) {
     }
 
-    public function ingest(array $vehicle, array $messages): array
+    public function ingest(array $vehicle, array $messages, bool $queueEligible = true): array
     {
         $inserted = 0;
         $rejected = 0;
@@ -173,7 +173,7 @@ final class IngestVehicleMessages
                 }
                 $this->repository->updateMessagePayload($storedMessage, $payload);
 
-                if ($this->repository->activityAllowed($activityId)
+                if ($queueEligible && $this->repository->activityAllowed($activityId)
                     && in_array($vehicleId, $this->repository->enabledBucketVehicleIds(), true)) {
                     $this->repository->enqueue(
                         $storedMessage + [

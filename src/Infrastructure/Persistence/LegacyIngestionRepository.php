@@ -18,7 +18,7 @@ final class LegacyIngestionRepository implements IngestionRepository
 
     public function enabledActivities(int $vehicleId): array
     {
-        return \EventDetector::enabledActivities($vehicleId);
+        return $this->settings()->enabledActivities($vehicleId);
     }
 
     public function speedLimit(array $vehicle): float
@@ -26,17 +26,18 @@ final class LegacyIngestionRepository implements IngestionRepository
         if (!empty($vehicle['speed_limit_kmh'])) {
             return (float) $vehicle['speed_limit_kmh'];
         }
-        return \EventDetector::speedLimit((int) $vehicle['id']);
+        return $this->settings()->speedLimit((int) $vehicle['id']);
     }
 
     public function resolveParameters(array $parameters, ?string $deviceType): array
     {
-        return \ParamResolver::resolve($parameters, $deviceType);
+        return \Latra\Domain\Ingestion\ParameterResolutionPolicy::resolve($parameters, $deviceType,
+            (new PdoParameterAliasRepository($this->activeConnection()))->enabledAliases());
     }
 
     public function overspeedConsecutiveSamples(): int
     {
-        return \Schema::configInt('overspeed_consecutive', 2);
+        return $this->settings()->configInt('overspeed_consecutive', 2);
     }
 
     public function beginMessage(): void
@@ -76,17 +77,19 @@ final class LegacyIngestionRepository implements IngestionRepository
 
     public function activityAllowed(int $activityId): bool
     {
-        return \Automation::isActivityAllowed($activityId);
+        return $this->settings()->activityAllowed($activityId);
     }
 
     public function enabledBucketVehicleIds(): array
     {
-        return \Automation::enabledBucketVehicleIds();
+        return $this->settings()->enabledBucketVehicleIds();
     }
 
     public function enqueue(array $message, array $payload, ?string $eventId, int $priority): void
     {
-        \Outbox::enqueue($message, $payload, $eventId, $priority);
+        (new \Latra\Application\Ingestion\QueueOutboxMessage(new PdoOutboxWriter($this->transactionConnection())))
+            ->enqueue($message, $payload, $eventId, $priority, $this->formattedDateTime(),
+                $this->settings()->configInt('outbox_max_tries', 8));
     }
 
     public function commitMessage(): void
@@ -112,6 +115,11 @@ final class LegacyIngestionRepository implements IngestionRepository
     public function formattedDateTime(): string
     {
         return date(\DATE_FORMAT);
+    }
+
+    private function settings(): PdoIngestionSettingsRepository
+    {
+        return new PdoIngestionSettingsRepository($this->activeConnection());
     }
 
     private function activeConnection(): PDO

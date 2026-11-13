@@ -329,3 +329,11 @@ try {
 }
 
 echo "PASS ingestion application batch, replay, rejection, side effects, and transaction boundaries\n";
+
+// Portal fetch is an import operation; it must never create dispatch intent.
+$importRepo = new IngestionUseCaseRepository();
+$importEffects = new IngestionUseCaseEffects();
+$imported = (new IngestVehicleMessages($importRepo, $importEffects))->ingest($vehicle, [$messages[0]], false);
+if ($imported['inserted'] !== 1 || $importRepo->outbox !== []) {
+    throw new RuntimeException('Portal import created automatic delivery intent');
+}

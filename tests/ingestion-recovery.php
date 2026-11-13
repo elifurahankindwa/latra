@@ -48,7 +48,7 @@ class IngestionProbeStatement extends PDOStatement {
         $matched = match ($this->stage) {
             'source' => str_starts_with($sql, 'INSERT INTO `message_log`'),
             'second_source' => str_starts_with($sql, 'INSERT INTO `message_log`') && ++self::$sourceWrites === 2,
-            'payload' => str_starts_with($sql, 'UPDATE `message_log` SET `latra_payload`'),
+            'payload' => preg_match('/^UPDATE `?message_log`? SET `?latra_payload`?/', $sql) === 1,
             'outbox' => str_starts_with($sql, 'INSERT INTO outbox'),
             default => false,
         };

@@ -2,39 +2,16 @@
 /**
  * Outbox queue.
  */
+require_once __DIR__ . '/autoload.php';
+
 class Outbox {
     /** Persist immutable retry data while locking its source against retention. */
     public static function enqueue(array $messageRow, array $payload, ?string $eventId = null, int $priority = 0): int {
-        $msgId = (int) $messageRow['id'];
-        $key = $messageRow['idempotency_key'] ?? ('msg-' . $msgId . '-' . (int) $messageRow['activity_id'] . '-' . ($eventId ?: 'n'));
-        $body = json_encode($payload, JSON_THROW_ON_ERROR);
         $pdo = Database::getInstance();
-        // Ingestion owns the source transaction; standalone producers still own theirs.
-        $ownsTransaction = !$pdo->inTransaction();
-        if ($ownsTransaction) $pdo->beginTransaction();
-        try {
-            $source = $pdo->prepare('SELECT id FROM message_log WHERE id = ? FOR UPDATE');
-            $source->execute([$msgId]);
-            if (!$source->fetch()) {
-                throw new RuntimeException('Cannot queue a missing source message');
-            }
-            // The unique key resolves concurrent producers without replacing an existing retry body.
-            $stmt = $pdo->prepare("INSERT INTO outbox
-                (message_id, vehicle_id, activity_id, event_id, idempotency_key, payload,
-                 status, next_attempt_at, priority, max_tries)
-                VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
-                ON DUPLICATE KEY UPDATE id = id");
-            $stmt->execute([$msgId, (int) $messageRow['vehicle_id'], (int) ($messageRow['activity_id'] ?? 1),
-                $eventId, $key, $body, date(DATE_FORMAT), $priority, Schema::configInt('outbox_max_tries', 8)]);
-            $lookup = $pdo->prepare('SELECT id FROM outbox WHERE idempotency_key = ?');
-            $lookup->execute([$key]);
-            $id = (int) $lookup->fetchColumn();
-            if ($ownsTransaction) $pdo->commit();
-            return $id;
-        } catch (Throwable $e) {
-            if ($ownsTransaction && $pdo->inTransaction()) $pdo->rollBack();
-            throw $e;
-        }
+        return (new \Latra\Application\Ingestion\QueueOutboxMessage(
+            new \Latra\Infrastructure\Persistence\PdoOutboxWriter($pdo),
+        ))->enqueue($messageRow, $payload, $eventId, $priority, date(DATE_FORMAT),
+            (new \Latra\Infrastructure\Persistence\PdoIngestionSettingsRepository($pdo))->configInt('outbox_max_tries', 8));
     }
 
     /** Select candidates only; the adapter locks and starts each actual attempt. */
