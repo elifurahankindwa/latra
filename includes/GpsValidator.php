@@ -3,6 +3,7 @@
  * Compatibility adapter for GPS validation and validation-error persistence.
  */
 use Latra\Domain\Ingestion\GpsValidationPolicy;
+use Latra\Infrastructure\Persistence\PdoValidationEvidenceRepository;
 
 require_once __DIR__ . '/autoload.php';
 
@@ -29,29 +30,12 @@ class GpsValidator
 
     public static function recordErrors(array $message, array $errors): int
     {
-        if (!$errors) {
+        if ($errors === []) {
             return 0;
         }
-        $count = 0;
-        foreach ($errors as $error) {
-            Database::insert('validation_errors', [
-                'message_log_id' => $message['id'] ?? null,
-                'vehicle_id' => $message['vehicle_id'] ?? null,
-                'vehicle_reg_no' => $message['vehicle_reg_no'] ?? null,
-                'imei' => $message['imei'] ?? null,
-                'field' => $error['field'],
-                'invalid_value' => isset($error['value'])
-                    ? (is_scalar($error['value']) ? (string) $error['value'] : json_encode($error['value']))
-                    : null,
-                'reason' => $error['reason'],
-                'error_code' => $error['code'] ?? null,
-                'activity_id' => $message['activity_id'] ?? null,
-                'validation_status' => 'failed',
-                'gps_timestamp' => $message['wialon_msg_time'] ?? null,
-            ]);
-            $count++;
-        }
-        return $count;
+
+        return (new PdoValidationEvidenceRepository(Database::getInstance()))
+            ->recordErrors($message, $errors);
     }
 
     public static function statusOf(array $result): string

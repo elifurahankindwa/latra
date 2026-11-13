@@ -61,7 +61,12 @@ final class LegacyIngestionRepository implements IngestionRepository
 
     public function recordValidationErrors(array $message, array $errors): void
     {
-        \GpsValidator::recordErrors($message, $errors);
+        if ($errors === []) {
+            return;
+        }
+
+        (new PdoValidationEvidenceRepository($this->transactionConnection()))
+            ->recordErrors($message, $errors);
     }
 
     public function updateMessagePayload(array $message, array $payload): void

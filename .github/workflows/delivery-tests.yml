@@ -96,6 +96,7 @@ jobs:
         run: |
           php tests/ingestion-usecase.php
           php tests/ingestion-message-repository.php
+          php tests/ingestion-validation-evidence.php
           php tests/ingestion-trip-stats.php
           php tests/ingestion-device-status.php
           php tests/ingestion-domain-policies.php
