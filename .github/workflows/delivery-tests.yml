@@ -98,6 +98,7 @@ jobs:
           php tests/ingestion-message-repository.php
           php tests/ingestion-validation-evidence.php
           php tests/ingestion-vehicle-state.php
+          php tests/ingestion-newest-message.php
           php tests/ingestion-trip-stats.php
           php tests/ingestion-device-status.php
           php tests/ingestion-domain-policies.php

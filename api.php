@@ -269,8 +269,9 @@ try {
             // Close any ended emergency event.
             EmergencyHandler::closeEndedEvent($vehicleId, $messages);
 
-            // Save the newest evaluated message.
-            $lastMsg = $messages[0] ?? null;
+            // Save the newest evaluated message. Wialon array order is not a source-order
+            // guarantee, so select by source time instead of trusting the first element.
+            $lastMsg = \Latra\Domain\Ingestion\NewestSourceMessagePolicy::select($messages);
             if ($lastMsg) {
                 $lastPos = $lastMsg['pos'] ?? [];
                 $lastParams = $lastMsg['p'] ?? [];

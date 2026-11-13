@@ -6,6 +6,7 @@ namespace Latra\Application\Ingestion;
 use Latra\Domain\Ingestion\ActivityDetectionPolicy;
 use Latra\Domain\Ingestion\GpsValidationPolicy;
 use Latra\Domain\Ingestion\LatraPayloadPolicy;
+use Latra\Domain\Ingestion\NewestSourceMessagePolicy;
 use Latra\Domain\Ingestion\WialonMessageNormalizationPolicy;
 use Throwable;
 
@@ -196,13 +197,7 @@ final class IngestVehicleMessages
 
         // Persist the newest source message's state. Wialon may return messages in any order, so
         // select by source time instead of trusting the first array element.
-        $newestMessage = null;
-        foreach ($messages as $candidate) {
-            if ($newestMessage === null
-                || (int) ($candidate['t'] ?? 0) >= (int) ($newestMessage['t'] ?? 0)) {
-                $newestMessage = $candidate;
-            }
-        }
+        $newestMessage = NewestSourceMessagePolicy::select($messages);
         if ($newestMessage !== null) {
             $lastPosition = $newestMessage['pos'] ?? [];
             $lastParameters = $this->repository->resolveParameters(

@@ -50,6 +50,7 @@ jobs:
           php tests/relay-config.php
           php tests/relay-cutover.php
           php tests/relay-api.php
+          php tests/api-legacy-state.php
       - name: Verify native queue, process death and application integration
         env:
           LATRA_RELAY_TEST_DSN: mysql:host=127.0.0.1;port=3306;dbname=latra_test_relay_app_ci;charset=utf8mb4
