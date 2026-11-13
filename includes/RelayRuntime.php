@@ -14,7 +14,7 @@ final class RelayRuntime {
 
     public static function settings(int $vehicleId): array {
         $row = self::settingsOrNull($vehicleId);
-        if ($row === null) throw new RuntimeException('Vehicle is not enrolled for relay collection');
+        if ($row === null) throw new \Latra\Domain\Exception\NotEnrolled('Vehicle is not enrolled for relay collection');
         return $row;
     }
 
@@ -235,14 +235,14 @@ final class RelayRuntime {
             }
         }
         if (!$vehicle) {
-            throw new RuntimeException('Relay mode requires a known vehicle identity for queued payloads');
+            throw new \Latra\Domain\Exception\InvalidSubmission('Relay mode requires a known vehicle identity for queued payloads');
         }
         $vehicleReg = $payload['vehicle_reg_no'] ?? null;
         $imei = $payload['imei'] ?? null;
         if (($vehicleReg !== null && (string) $vehicleReg !== (string) ($vehicle['vehicle_reg_no'] ?? ''))
             || ($imei !== null && (string) $imei !== (string) ($vehicle['imei'] ?? ''))
         ) {
-            throw new RuntimeException('Relay payload identity does not match the owning vehicle');
+            throw new \Latra\Domain\Exception\InvalidSubmission('Relay payload identity does not match the owning vehicle');
         }
         return self::queuePayload($vehicle, $payload);
     }
@@ -250,22 +250,8 @@ final class RelayRuntime {
     /** Preserve manual submission as durable intent, never a direct network bypass. */
     public static function queuePayload(array $vehicle, array $payload): array {
         $settings = self::settings((int) $vehicle['id']);
-        if (($payload['vehicle_reg_no'] ?? null) !== $vehicle['vehicle_reg_no']
-            || ($payload['imei'] ?? null) !== $vehicle['imei'] || empty($payload['items'])) {
-            throw new RuntimeException('Payload vehicle identity mismatch');
-        }
-        foreach ($payload['items'] as $item) {
-            $one = $payload; $one['items'] = [$item];
-            if (LatraMapper::validatePayload($one)) throw new RuntimeException('Invalid manual payload');
-        }
-        $timestamp = $payload['items'][0]['timestamp'] ?? null;
-        if (!is_string($timestamp) || !ctype_digit($timestamp)) throw new RuntimeException('Source timestamp required');
-        $time = intdiv((int) $timestamp, 1000);
-        $raw = ['t' => $time, 'payload' => $payload];
-        $manualStream = 'manual:wialon:' . $vehicle['wialon_unit_id'] . ':' . substr(hash('sha256', json_encode($payload, JSON_THROW_ON_ERROR)), 0, 24);
-        $added = self::queue($settings)->collect($manualStream, $time, $time,
-            1, 1, (int) $settings['max_bytes'], static fn(): array => ['count' => 1, 'messages' => [$raw]],
-            static fn(array $message, array $state): array => ['payload' => $message['payload'], 'state' => $state]);
-        return ['success' => true, 'queued' => $added, 'message' => 'Saved to the durable relay. Real LATRA delivery is blocked.'];
+        return (new \Latra\Application\Collection\QueueManualRelayPayload(
+            self::queue($settings), (int)$settings['max_bytes'],
+        ))->queue($vehicle, $payload);
     }
 }

@@ -23,10 +23,14 @@ final class WialonMessageWindowSource implements CompleteMessageWindowSource
     ): array {
         try {
             if (!$this->client->login()) {
-                throw new RuntimeException('Wialon login failed');
+                throw new \Latra\Domain\Exception\SourceUnavailable('Wialon login failed');
             }
 
             return $this->client->getCompleteWindow($unitId, $from, $to, $pageSize, $maxRecords, $maxBytes);
+        } catch (\Latra\Domain\Exception\SourceUnavailable $error) {
+            throw $error;
+        } catch (\Throwable $error) {
+            throw new \Latra\Domain\Exception\SourceUnavailable($error->getMessage(), (int)$error->getCode(), $error);
         } finally {
             $this->client->logout();
         }

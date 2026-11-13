@@ -9,6 +9,7 @@ if (isset($options['help'])) {
     echo "  --max-records=N --max-bytes=N --max-pending-records=N --max-pending-bytes=N\n";
     echo "Apply migrations/009_durable_relay.sql first. Collection uses enrolled budgets and existing activity rules.\n";
     echo "Apply migrations/010_relay_review_recovery.sql before --recover-review. Recovery never sends to LATRA.\n";
+    echo "Apply migrations/011_relay_review_schedule.sql before collection/delivery; review rows have no retry schedule.\n";
     echo "Enrollment does not enable activities or alter schedules. This command never sends to LATRA.\n";
     exit;
 }
@@ -52,6 +53,9 @@ try {
         echo json_encode($result + RelayRuntime::status($vehicle), JSON_THROW_ON_ERROR) . "\n";
     }
 } catch (Throwable $error) {
+    $failure = class_exists(\Latra\Infrastructure\EntryPoint\WorkflowFailurePresenter::class)
+        ? \Latra\Infrastructure\EntryPoint\WorkflowFailurePresenter::present($error)['body']['code'] : 'internal_error';
+    fwrite(STDERR, '[' . $failure . '] ');
     fwrite(STDERR, "Relay command failed (" . get_class($error) . "). Verify arguments, migration, enrollment and private runtime configuration.\n");
     exit(1);
 }

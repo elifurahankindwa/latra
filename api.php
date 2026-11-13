@@ -189,106 +189,9 @@ try {
             $messages = $wialon->getMessages((int)$vehicle['wialon_unit_id'], $from, $to, 100);
             $wialon->logout();
 
-            $inserted = 0;
-            $skippedInvalid = 0;
-            $prevState = Database::fetch("SELECT * FROM vehicle_state WHERE vehicle_id = ?", [$vehicleId]) ?? [];
-            $enabledActs = EventDetector::enabledActivities($vehicleId);
-            $speedLimit = EventDetector::speedLimit($vehicleId);
-
-            foreach ($messages as $msg) {
-                $pos = $msg['pos'] ?? [];
-                $params = $msg['p'] ?? [];
-
-                $speed = isset($pos['s']) ? round((float)$pos['s'], 2) : null;
-                $detected = EventDetector::detect($params, $prevState, [
-                    'speed' => $speed ?? 0,
-                    'activity_enabled' => $enabledActs,
-                    'speed_limit' => $speedLimit,
-                    'engine_param' => $vehicle['engine_param'] ?? null,
-                ]);
-                $activityId = $detected['activity_id'];
-
-                // Rolling engine baseline across the batch (see IngestPipeline).
-                $ignited = EventDetector::engineState($params, $vehicle['engine_param'] ?? null);
-                if ($ignited !== null) {
-                    $prevState['engine_status'] = $ignited ? 'on' : 'off';
-                }
-                $addonInfo = json_encode(LatraMapper::buildAddonInfo($activityId, $params) ?? []);
-                $fuelInfo = $activityId === 16 ? json_encode(LatraMapper::buildFuelInfo($params)) : null;
-
-                // Start a high-frequency event for emergencies.
-                $emergencyType = EmergencyHandler::mapEmergencyType($activityId);
-                if ($emergencyType) {
-                    $activeEvt = EmergencyHandler::ensureActiveEvent($vehicleId, $emergencyType, $detected['reason'], $speed, $activityId);
-                    if ($activeEvt) {
-                        EmergencyHandler::bufferRecord($activeEvt, $vehicleId, $msg);
-                    }
-                } else {
-                    // Close any ended emergency event.
-                }
-
-                // Update device health.
-                DeviceMonitor::updateFromMessage($vehicleId, $params, $msg['rt'] ?? time());
-
-                $msgData = [
-                    'vehicle_id' => $vehicleId,
-                    'wialon_msg_time' => $msg['t'] ?? time(),
-                    'raw_data' => json_encode($msg),
-                    'lat' => isset($pos['y']) ? round((float)$pos['y'], 8) : null,
-                    'lng' => isset($pos['x']) ? round((float)$pos['x'], 8) : null,
-                    'altitude' => $pos['z'] ?? null,
-                    'speed' => $speed,
-                    'bearing' => $pos['c'] ?? null,
-                    'satellite_count' => $pos['sc'] ?? null,
-                    'hdop' => $params['hdop'] ?? null,
-                    'd2d3' => isset($pos['z']) && $pos['z'] !== 0 ? 3 : 2,
-                    'rssi' => $params['rssi'] ?? $params['gsm'] ?? null,
-                    'lac' => $params['lac'] ?? $params['gsm_lac'] ?? $params['lbs_lac'] ?? null,
-                    'cell_id' => $params['cell_id'] ?? $params['cellid'] ?? $params['cid'] ?? $params['gsm_cellid'] ?? $params['gsm_cell_id'] ?? $params['lbs_cell_id'] ?? null,
-                    'mcc' => $params['mcc'] ?? null,
-                    'mgs_id' => $msg['t'] ?? null,
-                    'activity_id' => $activityId,
-                    'addon_info' => $addonInfo,
-                    'fuel_info' => $fuelInfo,
-                    'latra_status' => 'pending',
-                    'data_received_at' => $msg['rt'] ?? time(),
-                ];
-
-                // Check the row against LATRA rules.
-                $validation = GpsValidator::validate($msgData + ['imei' => $vehicle['imei'], 'vehicle_reg_no' => $vehicle['vehicle_reg_no']]);
-                $msgData['validation_status'] = GpsValidator::statusOf($validation);
-                if (!$validation['valid']) {
-                    GpsValidator::recordErrors($msgData, $validation['errors']);
-                    $msgData['latra_status'] = 'rejected';
-                    $skippedInvalid++;
-                }
-
-                if (Automation::storeMessage($msgData)) $inserted++;
-            }
-
-            // Close any ended emergency event.
-            EmergencyHandler::closeEndedEvent($vehicleId, $messages);
-
-            // Save the newest evaluated message. Wialon array order is not a source-order
-            // guarantee, so select by source time instead of trusting the first element.
-            $lastMsg = \Latra\Domain\Ingestion\NewestSourceMessagePolicy::select($messages);
-            if ($lastMsg) {
-                $lastPos = $lastMsg['pos'] ?? [];
-                $lastParams = $lastMsg['p'] ?? [];
-                $lastSpeed = isset($lastPos['s']) ? round((float)$lastPos['s'], 2) : 0;
-                $lastDetected = EventDetector::detect($lastParams, $prevState, [
-                    'speed' => $lastSpeed, 'activity_enabled' => $enabledActs, 'speed_limit' => $speedLimit,
-                    'engine_param' => $vehicle['engine_param'] ?? null,
-                ]);
-                EventDetector::persistState($vehicleId, [
-                    'engine_status' => EventDetector::engineState($lastParams, $vehicle['engine_param'] ?? null) === true ? 'on' : 'off',
-                    'last_speed_kmh' => $lastSpeed,
-                    'last_lat' => isset($lastPos['y']) ? round((float)$lastPos['y'], 8) : null,
-                    'last_lng' => isset($lastPos['x']) ? round((float)$lastPos['x'], 8) : null,
-                    'last_event_activity_id' => $lastDetected['activity_id'],
-                    'last_event_at' => date(DATE_FORMAT),
-                ]);
-            }
+            $imported = IngestPipeline::importVehicle($vehicle, $messages);
+            $inserted = $imported['inserted'] + $imported['rejected'];
+            $skippedInvalid = $imported['rejected'];
 
             echo json_encode(['success' => true, 'message' => "$inserted messages fetched and stored ($skippedInvalid invalid/rejected)"]);
             break;
@@ -819,42 +722,8 @@ try {
                     $to = time();
                     $from = $to - 86400;
                     $messages = $wialon->getMessages((int)$vehicle['wialon_unit_id'], $from, $to, 100);
-                    $inserted = 0;
-
-                    foreach ($messages as $msg) {
-                        $pos = $msg['pos'] ?? [];
-                        $params = $msg['p'] ?? [];
-                        $activityId = LatraMapper::detectActivity($params);
-$addonCustom = [];
-                if ($activityId === EventDetector::ENGINE_OFF) {
-                            $addonCustom = LatraMapper::buildTripStats($vid, (int) ($msg['t'] ?? 0));
-                }
-                $addonInfo = json_encode(LatraMapper::buildAddonInfo($activityId, $params, $addonCustom) ?? []);
-                        $fuelInfo = $activityId === 16 ? json_encode(LatraMapper::buildFuelInfo($params)) : null;
-                        $msgData = [
-                            'vehicle_id' => $vid,
-                            'wialon_msg_time' => $msg['t'] ?? time(),
-                            'raw_data' => json_encode($msg),
-                            'lat' => isset($pos['y']) ? round((float)$pos['y'], 8) : null,
-                            'lng' => isset($pos['x']) ? round((float)$pos['x'], 8) : null,
-                            'altitude' => $pos['z'] ?? null,
-                            'speed' => $pos['s'] ?? null,
-                            'bearing' => $pos['c'] ?? null,
-                            'satellite_count' => $pos['sc'] ?? null,
-                            'hdop' => $params['hdop'] ?? null,
-                            'd2d3' => isset($pos['z']) && $pos['z'] !== 0 ? 3 : 2,
-                            'rssi' => $params['rssi'] ?? $params['gsm'] ?? null,
-                            'lac' => $params['lac'] ?? $params['gsm_lac'] ?? $params['lbs_lac'] ?? null,
-                            'cell_id' => $params['cell_id'] ?? $params['cellid'] ?? $params['cid'] ?? $params['gsm_cellid'] ?? null,
-                            'mcc' => $params['mcc'] ?? null,
-                            'mgs_id' => $msg['t'] ?? null,
-                            'activity_id' => $activityId,
-                            'addon_info' => $addonInfo,
-                            'fuel_info' => $fuelInfo,
-                            'latra_status' => 'pending'
-                        ];
-                        if (Automation::storeMessage($msgData)) $inserted++;
-                    }
+                    $imported = IngestPipeline::importVehicle($vehicle, $messages);
+                    $inserted = $imported['inserted'] + $imported['rejected'];
 
                     sendSse([
                         'type' => 'progress', 'current' => $i + 1, 'total' => $total,
@@ -1083,6 +952,10 @@ $addonCustom = [];
         $target = $_POST['target_label'] ?? $_POST['id'] ?? $_POST['message_id'] ?? $_POST['vehicle_id'] ?? $_POST['activity_id'] ?? '';
         Auth::audit('api.' . $action, (string) $target);
     }
+} catch (\Latra\Domain\Exception\InvalidSubmission|\Latra\Domain\Exception\OwnershipLost|\Latra\Domain\Exception\CapacityExceeded|\Latra\Domain\Exception\SourceUnavailable|\Latra\Domain\Exception\NotEnrolled|\Latra\Domain\Exception\RequiresReview $e) {
+    $failure = \Latra\Infrastructure\EntryPoint\WorkflowFailurePresenter::present($e);
+    http_response_code($failure['status']);
+    echo json_encode($failure['body']);
 } catch (Exception $e) {
     http_response_code(400);
     echo json_encode(['success' => false, 'error' => $e->getMessage()]);

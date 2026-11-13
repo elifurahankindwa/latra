@@ -12,7 +12,7 @@ final class RelayCollectionPolicy
     {
         if ($unit === '' || strlen($unit) > 64 || $from < 0 || $to < $from
             || $pageSize < 1 || $maxRecords < 1 || $maxBytes < 1) {
-            throw new InvalidArgumentException('Explicit bounded window required');
+            throw new \Latra\Domain\Exception\InvalidSubmission('Explicit bounded window required');
         }
     }
 
@@ -24,17 +24,17 @@ final class RelayCollectionPolicy
     public static function assertContiguous(array $state, int $from): void
     {
         if ($state['collected_through'] !== null && $from > (int) $state['collected_through'] + 1) {
-            throw new RuntimeException('Collection gap requires explicit backfill');
+            throw new \Latra\Domain\Exception\RequiresReview('Collection gap requires explicit backfill');
         }
     }
 
     public static function assertNotLate(array $state, int $time): void
     {
         if ($state['attempted_time'] !== null && $time < (int) $state['attempted_time']) {
-            throw new RuntimeException('Late report requires review');
+            throw new \Latra\Domain\Exception\RequiresReview('Late report requires review');
         }
         if ($state['collected_through'] !== null && $time <= (int) $state['collected_through']) {
-            throw new RuntimeException('New report behind collection checkpoint requires review');
+            throw new \Latra\Domain\Exception\RequiresReview('New report behind collection checkpoint requires review');
         }
     }
 

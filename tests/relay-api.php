@@ -72,12 +72,13 @@ class RelayRuntime {
         return ['success'=>true,'queued'=>1,'message'=>'Saved to the durable relay.'];
     }
     public static function poll(array $vehicle, int $window, int $limit): array {
+        if (getenv('API_SOURCE_UNAVAILABLE') === '1') throw new \Latra\Domain\Exception\SourceUnavailable('Incomplete source window');
         if ($vehicle['id'] !== 1 || $window !== 86400 || $limit !== 100) throw new RuntimeException('Portal source window/work policy changed');
         return ['fetched'=>3,'inserted'=>2,'rejected'=>1,'skipped'=>0,'queued'=>3];
     }
 }
 PHP;
-file_put_contents($root . '/config.php', $config);
+file_put_contents($root . '/config.php', str_replace('<?php', '<?php require_once ' . var_export(realpath(__DIR__.'/../includes/autoload.php'), true) . ';', $config));
 function request(string $root, string $action, bool $sse = false, array $environment = [], array $parameters = []): string {
     $csrf = $environment['CSRF'] ?? 'synthetic-csrf';
     $query = array_merge(['action' => $action, 'vehicle_ids' => '1,999', 'activity_id' => '2', '_csrf' => $csrf], $sse ? $parameters : []);
@@ -100,6 +101,9 @@ try {
     $single = json_decode(request($root, 'fetch_messages'), true, 512, JSON_THROW_ON_ERROR);
     expect(($single['success'] ?? false) === true && ($single['fetched'] ?? null) === 3 && ($single['rejected'] ?? null) === 1,
         'Single-vehicle fetch bypassed relay or lost review evidence');
+    $unavailable = json_decode(request($root, 'fetch_messages', false, ['API_SOURCE_UNAVAILABLE'=>'1']), true, 512, JSON_THROW_ON_ERROR);
+    expect($unavailable === ['success'=>false,'error'=>'Incomplete source window','code'=>'source_unavailable','retryable'=>true],
+        'API did not map the typed source failure');
     $bulk = request($root, 'bulk_fetch_messages', true);
     preg_match_all('/^data: (.+)$/m', $bulk, $matches);
     $events = array_map(static fn(string $json): array => json_decode($json, true, 512, JSON_THROW_ON_ERROR), $matches[1]);

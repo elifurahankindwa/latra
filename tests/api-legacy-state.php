@@ -53,6 +53,35 @@ class Database {
     public static function query(...$args): never { throw new RuntimeException('Unexpected query'); }
 }
 PHP,
+    'IngestPipeline' => <<<'PHP'
+<?php
+class IngestPipeline {
+    public static function importVehicle(array $vehicle, array $messages): array {
+        $repository = new class implements \Latra\Application\Ingestion\IngestionRepository {
+            public array $messages = [];
+            public function loadVehicleState(int $id): array { return ['engine_status'=>'off']; }
+            public function enabledActivities(int $id): array { return []; }
+            public function speedLimit(array $v): float { return 80.0; }
+            public function resolveParameters(array $p, ?string $type): array { return $p; }
+            public function overspeedConsecutiveSamples(): int { return 2; }
+            public function beginMessage(): void {}
+            public function storeMessage(array $message): bool { $this->messages[$message['wialon_msg_time']]=$message; return true; }
+            public function findMessage(int $v, int $t): ?array { return ['id'=>$t]+$this->messages[$t]; }
+            public function recordValidationErrors(array $m, array $e): void {}
+            public function updateMessagePayload(array $m, array $p): void {}
+            public function activityAllowed(int $id): bool { throw new LogicException('Import checked queue eligibility'); }
+            public function enabledBucketVehicleIds(): array { throw new LogicException('Import checked queue eligibility'); }
+            public function enqueue(array $m, array $p, ?string $id, int $priority): void { throw new LogicException('Import queued dispatch'); }
+            public function commitMessage(): void {}
+            public function rollbackMessage(): void {}
+            public function persistVehicleState(int $id, array $state): void { EventDetector::persistState($id,$state); }
+            public function formattedDateTime(): string { return date(DATE_FORMAT); }
+        };
+        return (new \Latra\Application\Ingestion\IngestVehicleMessages($repository,
+            new \Latra\Infrastructure\Ingestion\LegacyIngestionEffects()))->ingest($vehicle,$messages, false);
+    }
+}
+PHP,
     'WialonAPI' => <<<'PHP'
 <?php
 class WialonAPI {
@@ -63,8 +92,8 @@ class WialonAPI {
             throw new RuntimeException('Unexpected Wialon request');
         }
         return [
-            ['t' => 1_800_000_100, 'pos' => ['s' => 11, 'y' => -6.80, 'x' => 39.20], 'p' => ['ign' => 0]],
-            ['t' => 1_800_000_200, 'pos' => ['s' => 57, 'y' => -6.70, 'x' => 39.30], 'p' => ['ign' => 1]],
+            ['t' => time() - 20, 'pos' => ['s' => 11, 'y' => -6.80, 'x' => 39.20], 'p' => ['ign' => 0]],
+            ['t' => time() - 10, 'pos' => ['s' => 57, 'y' => -6.70, 'x' => 39.30], 'p' => ['ign' => 1]],
         ];
     }
 }

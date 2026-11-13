@@ -97,7 +97,7 @@ final class PersistRelayWindow implements RelayWindowCollector
             }
             if ((int) $capacity['records'] + $added + 1 > $this->maximumPendingRecords
                 || (int) $capacity['bytes'] + $mappedBytes > $this->maximumPendingBytes) {
-                throw new RuntimeException('Pending capacity reached; retain window for later recollection');
+                throw new \Latra\Domain\Exception\CapacityExceeded('Pending capacity reached; retain window for later recollection');
             }
 
             $this->repository->setIdentityState($key, $status);
