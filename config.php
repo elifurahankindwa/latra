@@ -45,6 +45,12 @@ if (!is_dir(LOGS_DIR)) {
 }
 
 define('APP_ENV', envValue('APP_ENV', 'production'));
+// Relay is opt-in: flipping the default before migrations 009/010 and explicit vehicle enrollment
+// would make every unenrolled vehicle fail. Enable it per deployment after those steps.
+define('DELIVERY_ARCHITECTURE', envValue('DELIVERY_ARCHITECTURE', 'legacy'));
+if (!in_array(DELIVERY_ARCHITECTURE, ['relay', 'legacy'], true)) {
+    throw new RuntimeException('Unsupported delivery architecture');
+}
 
 // Error reporting: safe off-by-default, verbose only in development.
 error_reporting(E_ALL);
@@ -162,13 +168,7 @@ if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
-// Autoloader
-spl_autoload_register(function ($class) {
-    $file = __DIR__ . '/includes/' . $class . '.php';
-    if (file_exists($file)) {
-        require_once $file;
-    }
-});
+require_once __DIR__ . '/includes/autoload.php';
 
 // Create includes directory if not exists
 if (!is_dir(__DIR__ . '/includes')) {

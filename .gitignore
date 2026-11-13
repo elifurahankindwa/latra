@@ -25,8 +25,24 @@ bruno/**/environments/local.bru
 .DS_Store
 *.swp
 
-# Local review documents and handoffs (never commit)
+# Local agent scratch configuration
+/.codex/
+
+# Local review documents, handoffs and ADRs (never commit while migration is in progress)
 /docs/
+/AGENTS.md
+/HANDOFF*.md
+/COLLECTION.md
+/RELAY.md
 
 # Dated engineering reports and evidence (local/server only)
 /reports/
+
+# Private live-server database supplied for isolated assessment only
+/codeafrica_latra.sql
+
+# Private Wialon evidence inspector study copy
+/wialon-evidence-inspector/
+
+# Isolated temporary-outbox architecture experiment and synthetic results
+/relay-architecture-test/

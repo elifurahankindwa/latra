@@ -33,7 +33,11 @@ Polls GPS/telemetry from Wialon, classifies 24 activity types, and submits LATRA
 | Scheduler | Cron → `cron.php` (minute-level) |
 | External APIs | Wialon Remote API, LATRA VTS Annexure-1 |
 
-No Composer, no Node.js, no build step. Drop it on Apache and go.
+No Composer, no Node.js, no build step. Namespaced `src/` classes use the project's small PSR-4-compatible autoloader.
+
+## Backend layering direction
+
+New backend work is being separated incrementally into domain rules, application use cases, infrastructure (PDO repositories and external API adapters), and HTTP/CLI entry points. Existing root pages, `api.php`, cron scripts, and classes under `includes/` remain in place and keep their current contracts while each flow is migrated and regression-tested. This avoids a framework change or a broad move that could break deployments.
 
 ---
 
@@ -80,6 +84,10 @@ For detailed instructions see **[SETUP_GUIDE.md](SETUP_GUIDE.md)**.
 ```
 latra-wialon-integration/
 ├── config.php              # Environment loader, autoloader
+├── src/                    # Namespaced domain and application code
+│   ├── Domain/            # Collection, delivery and ingestion policies
+│   ├── Application/       # Use cases and repository/effect ports
+│   └── Infrastructure/    # PDO persistence, Wialon and legacy adapters
 ├── .env                    # Secrets (not in git)
 ├── cron.php                # Scheduler entry point
 ├── database.sql            # Full schema dump
@@ -97,7 +105,8 @@ latra-wialon-integration/
 ├── settings.php            # System configuration
 ├── api.php                 # JSON API endpoints
 │
-├── includes/               # Core service classes
+├── includes/               # Existing application, integration, and storage classes
+│   ├── autoload.php        # PSR-4-compatible src/ loader and legacy class loader
 │   ├── Database.php        # PDO singleton, auto-reconnect
 │   ├── Auth.php            # Sessions, CSRF, rate limiting
 │   ├── WialonAPI.php       # Wialon Remote API client
