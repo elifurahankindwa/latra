@@ -47,7 +47,7 @@ $database->exec('CREATE TABLE relay_pending (
     source_time INTEGER,
     payload TEXT,
     status TEXT,
-    last_error TEXT
+    last_error TEXT, next_attempt INTEGER DEFAULT 0
 )');
 
 $messages = [

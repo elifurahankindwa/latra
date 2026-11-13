@@ -13,6 +13,7 @@ $db = new PDO($dsn, getenv('LATRA_RELAY_TEST_USER') ?: 'root', getenv('LATRA_REL
 if ($db->query('SELECT DATABASE()')->fetchColumn() !== $match[1]) throw new RuntimeException('Wrong database');
 $db->exec(file_get_contents(__DIR__ . '/../migrations/009_durable_relay.sql'));
 $db->exec(file_get_contents(__DIR__ . '/../migrations/010_relay_review_recovery.sql'));
+$db->exec(file_get_contents(__DIR__ . '/../migrations/011_relay_review_schedule.sql'));
 foreach (['relay_pending', 'relay_activity_identity', 'relay_identity', 'relay_units'] as $table) $db->exec('DELETE FROM ' . $table);
 (new ReflectionProperty(Database::class, 'instance'))->setValue(null, $db);
 (new ReflectionProperty(Database::class, 'sensitiveConfigScrubbed'))->setValue(null, true);

@@ -14,6 +14,8 @@ use Throwable;
 final class PdoRelayDeliveryRepository implements RelayDeliveryRepository
 {
     private ?Closure $cleanupHook;
+    private ?string $ownedUnit = null;
+    private ?int $connectionId = null;
 
     public function __construct(private PDO $database, ?callable $cleanupHook = null)
     {
@@ -22,12 +24,39 @@ final class PdoRelayDeliveryRepository implements RelayDeliveryRepository
 
     public function acquireUnitLock(string $unit): bool
     {
-        return (int) $this->run('SELECT GET_LOCK(?, 0)', [$this->lockName($unit)])->fetchColumn() === 1;
+        if ($this->ownedUnit !== null) throw new \LogicException('Delivery repository already owns a unit');
+        if ((int) $this->run('SELECT GET_LOCK(?, 0)', [$this->lockName($unit)])->fetchColumn() !== 1) return false;
+        $this->ownedUnit = $unit;
+        $this->connectionId = (int) $this->run('SELECT CONNECTION_ID()')->fetchColumn();
+        $this->assertUnitLock($unit);
+        return true;
+    }
+
+    public function assertUnitLock(string $unit): void
+    {
+        try {
+            $owner = $this->run('SELECT IS_USED_LOCK(?)', [$this->lockName($unit)])->fetchColumn();
+            $connection = (int) $this->run('SELECT CONNECTION_ID()')->fetchColumn();
+        } catch (\PDOException $error) {
+            throw new \Latra\Domain\Exception\OwnershipLost('Relay delivery lock connection was lost', 0, $error);
+        }
+        if ($this->ownedUnit !== $unit || $this->connectionId !== $connection || (int) $owner !== $connection) {
+            throw new \Latra\Domain\Exception\OwnershipLost('Relay delivery lock ownership was lost');
+        }
     }
 
     public function releaseUnitLock(string $unit): void
     {
-        $this->run('SELECT RELEASE_LOCK(?)', [$this->lockName($unit)]);
+        if ($this->ownedUnit !== $unit) return;
+        try {
+            // Never reconnect to release a lock. A dead connection releases its own locks.
+            $this->run('SELECT RELEASE_LOCK(?)', [$this->lockName($unit)]);
+        } catch (\PDOException) {
+            // Preserve the original dispatch/finalization failure.
+        } finally {
+            $this->ownedUnit = null;
+            $this->connectionId = null;
+        }
     }
 
     public function claimPending(
@@ -36,6 +65,7 @@ final class PdoRelayDeliveryRepository implements RelayDeliveryRepository
         int $maximumAttempts,
         ?callable $canSend = null,
     ): DeliveryClaim {
+        $this->assertUnitLock($unit);
         $this->database->beginTransaction();
         try {
             $this->run('SELECT unit FROM relay_units WHERE unit=? FOR UPDATE', [$unit])->fetchColumn();
@@ -52,13 +82,15 @@ final class PdoRelayDeliveryRepository implements RelayDeliveryRepository
                 return $this->commitClaim(DeliveryClaimStatus::Blocked);
             }
 
-            if ($canSend !== null && !$canSend($pendingReport)) {
-                return $this->commitClaim(DeliveryClaimStatus::Deferred);
+            if ($canSend !== null) {
+                $eligible = $canSend($pendingReport);
+                $this->assertUnitLock($unit);
+                if (!$eligible) return $this->commitClaim(DeliveryClaimStatus::Deferred);
             }
 
             if ((int) $pendingReport['attempts'] >= $maximumAttempts) {
                 $this->run(
-                    "UPDATE relay_pending SET status='review', last_error='Attempt budget exhausted' WHERE id=?",
+                    "UPDATE relay_pending SET status='review', next_attempt=NULL, last_error='Attempt budget exhausted' WHERE id=?",
                     [$pendingReport['id']]
                 );
                 $this->run(
@@ -68,6 +100,7 @@ final class PdoRelayDeliveryRepository implements RelayDeliveryRepository
                 return $this->commitClaim(DeliveryClaimStatus::Review);
             }
 
+            $this->assertUnitLock($unit);
             $this->run('UPDATE relay_pending SET attempts=attempts+1 WHERE id=?', [$pendingReport['id']]);
             $this->run(
                 'UPDATE relay_units SET attempted_time=GREATEST(COALESCE(attempted_time,0),?) WHERE unit=?',
@@ -120,6 +153,7 @@ final class PdoRelayDeliveryRepository implements RelayDeliveryRepository
 
     private function inTransaction(callable $operation): void
     {
+        $this->assertUnitLock($this->ownedUnit ?? '');
         $this->database->beginTransaction();
         try {
             $operation();

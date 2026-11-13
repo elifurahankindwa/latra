@@ -10,6 +10,9 @@ interface RelayDeliveryRepository
     /** Ownership spans the claim, transport and finalization; acquisition must not block. */
     public function acquireUnitLock(string $unit): bool;
 
+    /** Fail closed if the original connection no longer owns this unit. */
+    public function assertUnitLock(string $unit): void;
+
     public function releaseUnitLock(string $unit): void;
 
     /** Commit any reserved attempt before returning; leave no transaction open for transport. */

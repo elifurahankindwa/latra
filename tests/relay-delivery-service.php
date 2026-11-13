@@ -18,6 +18,8 @@ trait RelayDeliveryTestPdoBehavior
             self::$locks[$key] = $owner;
             return 1;
         });
+        $registerFunction('IS_USED_LOCK', static fn(string $key): ?int => self::$locks[$key] ?? null);
+        $registerFunction('CONNECTION_ID', static fn(): int => $owner);
         $registerFunction('RELEASE_LOCK', static function (string $key) use ($owner): int {
             if ((self::$locks[$key] ?? null) !== $owner) return 0;
             unset(self::$locks[$key]);
@@ -185,3 +187,17 @@ deliveryServiceExpect((int) $database->query("SELECT COUNT(*) FROM relay_pending
     'Acceptance cleanup failure did not roll back atomically');
 
 echo "PASS delivery use case, transactional repository, retry policy and cleanup recovery\n";
+
+// Losing the connection-scoped lock must stop before dispatch or accepted cleanup.
+addPendingReport($database, 'unit-lost', 'report-lost', 60);
+$lostRepository = new PdoRelayDeliveryRepository($database);
+$lostDelivery = new DeliverPendingReport($lostRepository, 2, $backoff, static function (string $stage) use ($lostRepository): void {
+    if ($stage === 'attempt') $lostRepository->releaseUnitLock('unit-lost');
+});
+try {
+    $lostDelivery->deliver('unit-lost', 600, static fn() => throw new LogicException('Sent after ownership was lost'));
+    throw new LogicException('Lost ownership was not detected');
+} catch (\Latra\Domain\Exception\OwnershipLost $error) {
+    deliveryServiceExpect((int) $database->query("SELECT COUNT(*) FROM relay_pending WHERE delivery_key='report-lost'")->fetchColumn() === 1,
+        'Lost ownership removed pending work');
+}

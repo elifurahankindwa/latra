@@ -3,6 +3,7 @@
 if (PHP_SAPI !== 'cli') exit(1);
 define('DELIVERY_ARCHITECTURE', 'relay');
 const DATE_FORMAT = 'Y-m-d H:i:s';
+define('LOGS_DIR', sys_get_temp_dir());
 $dsn = getenv('LATRA_RELAY_TEST_DSN') ?: '';
 if (getenv('LATRA_RELAY_TEST_ALLOW_RESET') !== '1'
     || !preg_match('/^mysql:.*;dbname=(latra_test_relay_app_[a-z0-9_]+)(?:;|$)/', $dsn, $match)) {
@@ -16,6 +17,7 @@ if ($db->query('SELECT DATABASE()')->fetchColumn() !== $match[1]) throw new Runt
 (new ReflectionProperty(Database::class, 'sensitiveConfigScrubbed'))->setValue(null, true);
 $db->exec(file_get_contents(__DIR__ . '/../migrations/009_durable_relay.sql'));
 $db->exec(file_get_contents(__DIR__ . '/../migrations/010_relay_review_recovery.sql'));
+$db->exec(file_get_contents(__DIR__ . '/../migrations/011_relay_review_schedule.sql'));
 foreach (['relay_pending', 'relay_activity_identity', 'relay_identity', 'relay_units', 'relay_vehicle_settings'] as $table) $db->exec('DELETE FROM ' . $table);
 foreach (['config','activity_mappings','automation_buckets','bucket_vehicles','overspeed_config','vehicles','message_log','outbox'] as $table) {
     $db->exec('DROP TABLE IF EXISTS ' . $table);
@@ -95,7 +97,9 @@ expect($replayRecovered['inserted'] === 0 && $replayRecovered['skipped'] === 2,
     'Recovered reports lost cross-stream activity identity');
 echo "PASS explicit recovery uses refreshed vehicle identity and preserves cross-stream deduplication\n";
 $disabled = new RuntimeSource([$report($now + 5)], $db);
-fails(static fn() => RelayRuntime::collect(Database::fetch('SELECT * FROM vehicles WHERE id=2'), 180, 100, ':poll', [1], $disabled, $now, $now + 2));
+$notEnrolled = RelayRuntime::collect(Database::fetch('SELECT * FROM vehicles WHERE id=2'), 180, 100, ':poll', [1], $disabled, $now, $now + 2);
+expect($notEnrolled === ['fetched'=>0,'queued'=>0,'inserted'=>0,'rejected'=>0,'skipped'=>0],
+    'Unenrolled vehicle did not return the deliberate non-fatal skip result');
 expect($disabled->logins === 0, 'Unenrolled vehicle reached Wialon');
 $before = $db->query('SELECT SUM(collected_through) FROM relay_units')->fetchColumn();
 $short = new RuntimeSource(array_map($report, range($now + 5, $now + 65)), $db); $short->short = true;

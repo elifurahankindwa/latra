@@ -66,8 +66,8 @@ final class PdoRelayCollectionRepository implements RelayCollectionRepository
     public function addPending(string $key, string $unit, int $time, string $body, string $status, ?string $error): void
     {
         $this->run(
-            'INSERT INTO relay_pending (delivery_key, unit, source_time, payload, status, last_error) VALUES (?, ?, ?, ?, ?, ?)',
-            [$key, $unit, $time, $body, $status, $error],
+            'INSERT INTO relay_pending (delivery_key, unit, source_time, payload, status, last_error, next_attempt) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            [$key, $unit, $time, $body, $status, $error, $status === 'review' ? null : 0],
         );
     }
 

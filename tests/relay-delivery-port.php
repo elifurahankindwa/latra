@@ -32,6 +32,7 @@ $repository = new class implements RelayDeliveryRepository {
         $this->calls[] = ['lock', $unit];
         return $this->locked;
     }
+    public function assertUnitLock(string $unit): void {}
     public function releaseUnitLock(string $unit): void { $this->calls[] = ['release', $unit]; }
     public function claimPending(string $unit, int $now, int $maximumAttempts, ?callable $canSend = null): DeliveryClaim
     {

@@ -39,6 +39,7 @@ final class DeliverPendingReport
 
             $pendingReport = $claim->report();
             $this->hit('attempt');
+            $this->repository->assertUnitLock($unit);
             try {
                 $response = $send($pendingReport['payload'], $pendingReport['delivery_key']);
             } catch (Throwable $error) {

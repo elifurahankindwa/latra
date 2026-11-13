@@ -67,11 +67,15 @@ $db = database();
 $relay = new DurableRelay($db, 8, static fn(int $attempt): int => 5, 100, 1048576);
 $db->exec(file_get_contents(__DIR__ . '/../migrations/009_durable_relay.sql'));
 $db->exec(file_get_contents(__DIR__ . '/../migrations/010_relay_review_recovery.sql'));
+$db->exec(file_get_contents(__DIR__ . '/../migrations/011_relay_review_schedule.sql'));
 $db->exec(file_get_contents(__DIR__ . '/../migrations/009_durable_relay.sql'));
 $db->exec(file_get_contents(__DIR__ . '/../migrations/010_relay_review_recovery.sql'));
+$db->exec(file_get_contents(__DIR__ . '/../migrations/011_relay_review_schedule.sql'));
 $db->exec('ALTER TABLE relay_identity DROP COLUMN source_key');
 $db->exec(file_get_contents(__DIR__ . '/../migrations/010_relay_review_recovery.sql'));
+$db->exec(file_get_contents(__DIR__ . '/../migrations/011_relay_review_schedule.sql'));
 $db->exec(file_get_contents(__DIR__ . '/../migrations/010_relay_review_recovery.sql'));
+$db->exec(file_get_contents(__DIR__ . '/../migrations/011_relay_review_schedule.sql'));
 check((int) $db->query("SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE()
     AND TABLE_NAME='relay_identity' AND COLUMN_NAME='source_key'")->fetchColumn() === 1,
     'Additive review recovery migration was not repeatable');
