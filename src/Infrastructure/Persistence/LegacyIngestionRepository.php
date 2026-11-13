@@ -13,7 +13,7 @@ final class LegacyIngestionRepository implements IngestionRepository
 
     public function loadVehicleState(int $vehicleId): array
     {
-        return \Database::fetch('SELECT * FROM vehicle_state WHERE vehicle_id = ?', [$vehicleId]) ?? [];
+        return (new PdoVehicleStateRepository($this->activeConnection()))->find($vehicleId);
     }
 
     public function enabledActivities(int $vehicleId): array
@@ -106,12 +106,17 @@ final class LegacyIngestionRepository implements IngestionRepository
 
     public function persistVehicleState(int $vehicleId, array $state): void
     {
-        \EventDetector::persistState($vehicleId, $state);
+        (new PdoVehicleStateRepository($this->activeConnection()))->save($vehicleId, $state);
     }
 
     public function formattedDateTime(): string
     {
         return date(\DATE_FORMAT);
+    }
+
+    private function activeConnection(): PDO
+    {
+        return $this->messageTransaction ?? \Database::getInstance();
     }
 
     private function transactionConnection(): PDO

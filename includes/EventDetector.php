@@ -3,6 +3,7 @@
  * Compatibility adapter for activity detection and vehicle-state persistence.
  */
 use Latra\Domain\Ingestion\ActivityDetectionPolicy;
+use Latra\Infrastructure\Persistence\PdoVehicleStateRepository;
 
 require_once __DIR__ . '/autoload.php';
 
@@ -84,11 +85,6 @@ class EventDetector
 
     public static function persistState(int $vehicleId, array $state): void
     {
-        $previous = Database::fetch('SELECT * FROM vehicle_state WHERE vehicle_id = ?', [$vehicleId]);
-        if ($previous) {
-            Database::update('vehicle_state', $state, 'vehicle_id = ?', [$vehicleId]);
-        } else {
-            Database::insert('vehicle_state', array_merge(['vehicle_id' => $vehicleId], $state));
-        }
+        (new PdoVehicleStateRepository(Database::getInstance()))->save($vehicleId, $state);
     }
 }
