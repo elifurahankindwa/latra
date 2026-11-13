@@ -1,0 +1,63 @@
+name: Durable relay regression tests
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        database: ['mysql:8.0', 'mariadb:10.11']
+    services:
+      database:
+        image: ${{ matrix.database }}
+        env:
+          MYSQL_ROOT_PASSWORD: synthetic-test-password
+          MYSQL_DATABASE: latra_test_relay_app_ci
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mariadb-admin ping -h 127.0.0.1 -psynthetic-test-password || mysqladmin ping -h 127.0.0.1 -psynthetic-test-password"
+          --health-interval=5s --health-timeout=5s --health-retries=30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: pdo_mysql, pdo_sqlite, curl, mbstring
+          coverage: none
+      - name: Verify source and mapping contracts without credentials
+        run: |
+          php tests/relay-delivery-policy.php
+          php tests/relay-delivery-service.php
+          php tests/relay-delivery-port.php
+          php tests/relay-flush-service.php
+          php tests/relay-mapping.php
+          php tests/relay-domain-mapping.php
+          php tests/relay-collection-policy.php
+          php tests/relay-collection-port.php
+          php tests/relay-collection-repository.php
+          php tests/relay-collection-usecase.php
+          php tests/relay-stream-usecase.php
+          php tests/relay-enrollment.php
+          php tests/relay-runtime-usecases.php
+          php tests/emergency-relay-status.php
+          php tests/relay-recovery.php
+          php tests/relay-config.php
+          php tests/relay-cutover.php
+          php tests/relay-api.php
+      - name: Verify native queue, process death and application integration
+        env:
+          LATRA_RELAY_TEST_DSN: mysql:host=127.0.0.1;port=3306;dbname=latra_test_relay_app_ci;charset=utf8mb4
+          LATRA_RELAY_TEST_USER: root
+          LATRA_RELAY_TEST_PASSWORD: synthetic-test-password
+          LATRA_RELAY_TEST_ALLOW_RESET: '1'
+        run: |
+          php tests/durable-relay.php
+          php tests/relay-integration.php
+          php tests/relay-runtime.php
+          php tests/relay-cli.php

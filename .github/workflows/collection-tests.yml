@@ -1,0 +1,29 @@
+name: Offline collection regression tests
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  collection:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      matrix:
+        php: ['8.2', '8.3']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: pdo_sqlite
+          coverage: none
+      - name: Parse collection sources
+        run: |
+          php -l includes/CollectionStore.php
+          php -l bin/collection.php
+          php -l tests/collection.php
+      # No credentials, live SQL dump, application bootstrap or network clients.
+      - name: Verify bounded capture, replay and process-crash recovery
+        run: php -d disable_functions=curl_exec,fsockopen,pfsockopen,stream_socket_client tests/collection.php

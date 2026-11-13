@@ -90,8 +90,15 @@ jobs:
       - uses: shivammathur/setup-php@v2
         with:
           php-version: '8.2'
-          extensions: pdo_mysql, mbstring
+          extensions: pdo_mysql, pdo_sqlite, mbstring
           coverage: none
+      - name: Verify isolated ingestion application orchestration
+        run: |
+          php tests/ingestion-usecase.php
+          php tests/ingestion-message-repository.php
+          php tests/ingestion-trip-stats.php
+          php tests/ingestion-device-status.php
+          php tests/ingestion-domain-policies.php
       # Separate from the delivery fixture: this suite imports the real schema and kills its own workers.
       - name: Verify atomic ingestion, crash restart and unchanged eligibility
         env:
