@@ -1,0 +1,11 @@
+{
+  "source": "synthetic-wialon",
+  "unit": "synthetic-unit-1",
+  "from": 100,
+  "to": 200,
+  "context": {"mapping_version": "raw-only-v1", "sensors": []},
+  "messages": [
+    {"t": 100, "rt": 101, "p": {"battery_low": 1, "turn": 1, "external_voltage": null}},
+    {"t": 100, "rt": 101, "p": {"external_voltage": 12.5, "internal_voltage": 4.1}}
+  ]
+}
