@@ -3,6 +3,7 @@ require_once 'config.php';
 require_once 'includes/Database.php';
 require_once 'includes/Auth.php';
 require_once 'includes/Layout.php';
+require_once 'includes/VehicleVst.php';
 Auth::requireView('vehicles.view');
 
 $vehicleId = intval($_GET['id'] ?? 0);
@@ -155,6 +156,8 @@ $pushes = Database::fetchAll(
     [$vehicleId]
 );
 
+$vstSummary = VehicleVst::summary($vehicleId);
+
 Layout::renderHead($vehicle['vehicle_reg_no'], true);
 Layout::assistContext(['vehicle_id' => $vehicleId, 'vehicle_reg_no' => $vehicle['vehicle_reg_no']]);
 ?>
@@ -168,6 +171,48 @@ Layout::assistContext(['vehicle_id' => $vehicleId, 'vehicle_reg_no' => $vehicle[
         <button class="btn btn-primary" onclick="fetchMessages(<?= $vehicleId ?>)"><i data-lucide="download"></i> Fetch Messages</button>
         <a href="activities.php?vehicle=<?= $vehicleId ?>" class="btn btn-ghost"><i data-lucide="list-checks"></i> Map Activities</a>
         <?php endif; ?>
+    </div>
+</div>
+
+<!-- Source evidence stays independent of activity mappings and outbound delivery. -->
+<div class="card mt-2" id="vehicle-specific-activities">
+    <div class="card-header">
+        <div class="card-title"><i data-lucide="activity"></i> Vehicle Specific Activities</div>
+        <span class="text-muted"><?= number_format($vstSummary['total']) ?> stored messages</span>
+    </div>
+    <div class="card-body">
+        <p class="text-muted">Latest reported values from stored messages; timestamps show when the device reported them.
+            Teltonika IO interpretation is shown below. Missing signals are not treated as normal.</p>
+        <?php if ($vstSummary['total']): ?>
+        <p class="text-muted">Stored source range:
+            <?= htmlspecialchars(toDisplay(gmdate(DATE_FORMAT, (int) $vstSummary['first_time']))) ?> —
+            <?= htmlspecialchars(toDisplay(gmdate(DATE_FORMAT, (int) $vstSummary['last_time']))) ?>.
+            Fetch limits may omit other Wialon records.</p>
+        <?php endif; ?>
+    </div>
+    <div class="table-responsive">
+        <table class="data-table">
+            <thead><tr><th>VST</th><th>Latest value / state</th><th>Source time</th><th>Messages</th><th>Source evidence</th></tr></thead>
+            <tbody>
+                <?php foreach ($vstSummary['rows'] as $vst): ?>
+                <tr>
+                    <td><?= htmlspecialchars($vst['label']) ?></td>
+                    <td><span class="badge badge-<?= $vst['message'] ? 'info' : 'secondary' ?>"><?= htmlspecialchars($vst['value']) ?></span>
+                        <?php if ($vst['note']): ?><div class="text-muted" style="max-width:340px; white-space:normal; margin-top:6px;"><?= htmlspecialchars($vst['note']) ?></div><?php endif; ?></td>
+                    <td><?= $vst['time'] !== null ? htmlspecialchars(toDisplay(gmdate(DATE_FORMAT, (int) $vst['time']))) : '—' ?></td>
+                    <td><?= number_format($vst['count']) ?> <?= in_array($vst['key'], ['braking', 'turning', 'acceleration'], true) ? 'matching' : 'readings' ?></td>
+                    <td><div class="text-muted"><?= htmlspecialchars($vst['source']) ?></div>
+                        <?php if ($vst['message']): ?>
+                        <details style="margin-top:6px;">
+                            <summary style="cursor:pointer;">View source message #<?= (int) $vst['message']['id'] ?></summary>
+                            <pre style="max-width:520px; max-height:300px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; margin-top:8px;"><?= htmlspecialchars(json_encode(json_decode($vst['message']['raw_data']), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES), ENT_QUOTES, 'UTF-8') ?></pre>
+                        </details>
+                        <?php else: ?><span class="text-muted">No matching source message stored.</span><?php endif; ?>
+                    </td>
+                </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
     </div>
 </div>
 
