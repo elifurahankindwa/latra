@@ -48,6 +48,12 @@ require __DIR__ . '/../includes/EmergencyHandler.php';
 require __DIR__ . '/../includes/LatraAdapter.php';
 function expect(bool $ok, string $why): void { if (!$ok) throw new RuntimeException($why); }
 class Database {
+    public static function getInstance(): PDO {
+        $db=new PDO('sqlite::memory:',null,null,[PDO::ATTR_ERRMODE=>PDO::ERRMODE_EXCEPTION]);
+        $db->exec('CREATE TABLE vehicles (id INTEGER,wialon_unit_id INTEGER,name TEXT,fuel_level_sensor TEXT,vehicle_reg_no TEXT,imei TEXT,is_active INTEGER)');
+        $db->exec("INSERT INTO vehicles VALUES (1,123,'Synthetic vehicle','fuel','SYNTHETIC','123456789012345',1)");
+        return $db;
+    }
     public static function fetchAll(string $sql, array $params = []): array {
         $vehicle = ['id'=>1,'wialon_unit_id'=>123,'name'=>'Synthetic vehicle','fuel_level_sensor'=>'fuel',
             'vehicle_reg_no'=>'SYNTHETIC','imei'=>'123456789012345'];

@@ -157,57 +157,20 @@ class Scheduler {
     }
 
     private static function jobPoll(): int {
-        $vehicles = Database::fetchAll("SELECT * FROM vehicles WHERE is_active = 1");
-        $activeEmergency = Database::fetchAll(
-            "SELECT DISTINCT vehicle_id FROM emergency_events WHERE status = 'active'"
-        );
-        $skip = [];
-        foreach ($activeEmergency as $e) {
-            $skip[(int) $e['vehicle_id']] = true;
-        }
-        $bucketVehicles = Database::fetchAll(
-            "SELECT DISTINCT vehicle_id FROM bucket_vehicles bv
-             JOIN automation_buckets b ON b.id = bv.bucket_id AND b.is_enabled = 1"
-        );
-        foreach ($bucketVehicles as $bv) {
-            $skip[(int) $bv['vehicle_id']] = true;
-        }
-        $items = 0;
-        $window = Schema::configInt('poll_interval_seconds', 180);
-        foreach ($vehicles as $v) {
-            if (isset($skip[(int) $v['id']])) {
-                continue;
-            }
-            try {
-                $r = FleetSync::pollVehicle($v, $window, 80);
-                $items += $r['inserted'] + $r['rejected'];
-            } catch (Throwable $e) {
-                Logger::warn('poll.vehicle_failed', ['vehicle' => $v['id'], 'error' => $e->getMessage()]);
-            }
-        }
-        return $items;
+        return self::polling()->ordinary(Schema::configInt('poll_interval_seconds', 180));
     }
 
     private static function jobEmergencyPoll(): int {
-        $events = Database::fetchAll("SELECT DISTINCT vehicle_id FROM emergency_events WHERE status = 'active'");
-        if (!$events) {
-            return 0;
-        }
-        $items = 0;
-        foreach ($events as $e) {
-            $v = Database::fetch("SELECT * FROM vehicles WHERE id = ?", [$e['vehicle_id']]);
-            if (!$v) {
-                continue;
-            }
-            try {
-                $r = FleetSync::pollVehicle($v, 5, 20);
-                $items += $r['inserted'];
-            } catch (Throwable $ex) {
-                Logger::warn('emergency.poll_failed', ['vehicle' => $v['id']]);
-            }
-        }
-        $items += self::jobFlush(true);
-        return $items;
+        return self::polling()->emergency();
+    }
+
+    private static function polling(): \Latra\Application\Ingestion\PollScheduledVehicles {
+        return new \Latra\Application\Ingestion\PollScheduledVehicles(
+            new \Latra\Infrastructure\Persistence\PdoScheduledVehicleRepository(Database::getInstance()),
+            static fn(array $vehicle, int $window, int $limit): array => FleetSync::pollVehicle($vehicle, $window, $limit),
+            static fn(string $event, array $context) => Logger::warn($event, $context),
+            static fn(bool $emergency): int => self::jobFlush($emergency),
+        );
     }
 
     /** Drain small candidate pages without claiming work that cannot start in time. */
@@ -256,123 +219,17 @@ class Scheduler {
     }
 
     private static function jobFuelReport(): int {
-        $vehicles = Database::fetchAll(
-            "SELECT v.*
-             FROM vehicles v
-             WHERE is_active = 1 AND wialon_unit_id > 0
-               AND fuel_level_sensor IS NOT NULL AND fuel_level_sensor <> ''"
-        );
-        if (empty($vehicles)) {
-            return 0;
-        }
-
-        $wialon = FleetSync::connector();
-        if (!$wialon->login()) {
-            throw new RuntimeException('Wialon login failed for fuel report');
-        }
-
-        $pushCount = 0;
-        $skipped = 0;
-        try {
-            foreach ($vehicles as $veh) {
-                $unitId = (int) $veh['wialon_unit_id'];
-                $data = $wialon->getUnitData($unitId);
-                if (!is_array($data)) {
-                    $skipped++;
-                    Logger::info('fuel.skipped', [
-                        'vehicle_id' => $veh['id'],
-                        'reason'     => 'no_unit_data',
-                        'unit_id'    => $unitId,
-                    ]);
-                    continue;
-                }
-
-                $fuelValue = null;
-                $fuelUnit = null;
-                foreach (($data['sens'] ?? []) as $sens) {
-                    $t = (string) ($sens['t'] ?? '');
-                    if ($t === (string) $veh['fuel_level_sensor']) {
-                        $fuelValue = $sens['v'] ?? null;
-                        $fuelUnit = $sens['u'] ?? null;
-                        break;
-                    }
-                }
-                if ($fuelValue === null || $fuelValue === '') {
-                    $skipped++;
-                    Logger::info('fuel.skipped', [
-                        'vehicle_id' => $veh['id'],
-                        'reason'     => 'no_live_fuel_value',
-                        'unit_id'    => $unitId,
-                        'sensor'     => $veh['fuel_level_sensor'],
-                    ]);
-                    continue;
-                }
-
-                $position = $data['pos'] ?? null;
-                if (!is_array($position) || !isset($position['t'], $position['x'], $position['y'])
-                    || !is_numeric($position['t']) || !is_numeric($position['x']) || !is_numeric($position['y'])
-                    || (int) $position['t'] <= 0) {
-                    $skipped++;
-                    Logger::info('fuel.skipped', [
-                        'vehicle_id' => $veh['id'],
-                        'reason'     => 'no_live_position',
-                        'unit_id'    => $unitId,
-                    ]);
-                    continue;
-                }
-
-                $source = [
-                    'wialon_msg_time' => (int) $position['t'],
-                    'lat' => $position['y'],
-                    'lng' => $position['x'],
-                    'altitude' => $position['z'] ?? null,
-                    'speed' => $position['s'] ?? null,
-                    'bearing' => $position['c'] ?? null,
-                    'satellite_count' => $position['sc'] ?? null,
-                ];
-                $payload = LatraMapper::buildPayload(
-                    $veh, $source, EventDetector::FUEL_REPORT,
-                    [],
-                    ['fuel_level' => $fuelValue, 'fuel_sensor_param' => $veh['fuel_level_sensor'], 'unit' => $fuelUnit]
-                );
-                if (RelayRuntime::enabled()) {
-                    try {
-                        $result = RelayRuntime::queueForVehicle($payload, (int) $veh['id']);
-                        if (!empty($result['success'])) {
-                            $pushCount++;
-                        } else {
-                            $skipped++;
-                            Logger::warn('fuel.queue_failed', [
-                                'vehicle_id' => $veh['id'],
-                                'error' => $result['message'] ?? 'unknown',
-                            ]);
-                        }
-                        continue;
-                    } catch (Throwable $e) {
-                        $skipped++;
-                        Logger::warn('fuel.queue_failed', [
-                            'vehicle_id' => $veh['id'],
-                            'error' => $e->getMessage(),
-                        ]);
-                        continue;
-                    }
-                }
-                $result = LatraAdapter::submit($payload, 'fuel-report-' . $veh['id'] . '-' . floor(time() / 1800));
-                if (!empty($result['ok']) || !empty($result['skipped'])) {
-                    $pushCount++;
-                } else {
-                    $skipped++;
-                    Logger::warn('fuel.push_failed', [
-                        'vehicle_id' => $veh['id'],
-                        'error'      => $result['curlError'] ?? ($result['response'] ?? 'unknown'),
-                    ]);
-                }
-            }
-        } finally {
-            $wialon->logout();
-        }
-        Logger::info('fuel.report', ['pushed' => $pushCount, 'skipped' => $skipped]);
-        return $pushCount;
+        return (new \Latra\Application\Ingestion\SubmitFuelReports(
+            new \Latra\Infrastructure\Persistence\PdoFuelReportRepository(Database::getInstance()),
+            new \Latra\Infrastructure\Wialon\WialonFuelReportSource(static fn(): WialonAPI => FleetSync::connector()),
+            static fn(array $vehicle, array $payload): array => RelayRuntime::enabled()
+                ? RelayRuntime::queueForVehicle($payload, (int)$vehicle['id'])
+                : LatraAdapter::submit($payload, 'fuel-report-' . $vehicle['id'] . '-' . floor(time()/1800)),
+            static function(string $event, array $context, bool $warning): void {
+                if ($warning) Logger::warn($event,$context); else Logger::info($event,$context);
+            },
+            RelayRuntime::enabled(),
+        ))->run();
     }
 
     private static function jobOffline(): int {
