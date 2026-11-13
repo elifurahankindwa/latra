@@ -1,0 +1,16 @@
+includes:
+    - phpstan-baseline.neon
+
+parameters:
+    level: 5
+    phpVersion: 80200
+    rememberPossiblyImpureFunctionValues: false
+    paths:
+        - src
+        - includes
+        - api.php
+        - cron.php
+        - bin/worker.php
+    scanFiles:
+        - config.php
+    tmpDir: .phpstan-cache

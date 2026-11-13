@@ -2,7 +2,7 @@ name: Durable relay regression tests
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, feat/architecture-hardening]
 permissions:
   contents: read
 jobs:
@@ -12,6 +12,7 @@ jobs:
       fail-fast: false
       matrix:
         database: ['mysql:8.0', 'mariadb:10.11']
+        php: ['8.2', '8.5']
     services:
       database:
         image: ${{ matrix.database }}
@@ -27,11 +28,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.2'
+          php-version: ${{ matrix.php }}
           extensions: pdo_mysql, pdo_sqlite, curl, mbstring
           coverage: none
       - name: Verify source and mapping contracts without credentials
         run: |
+          php tests/architecture-boundaries.php
           php tests/relay-delivery-policy.php
           php tests/relay-delivery-service.php
           php tests/relay-delivery-port.php
@@ -48,9 +50,12 @@ jobs:
           php tests/emergency-relay-status.php
           php tests/relay-recovery.php
           php tests/relay-config.php
+          php tests/relay-manual-submission.php
+          php tests/workflow-errors.php
           php tests/relay-cutover.php
           php tests/relay-api.php
           php tests/api-legacy-state.php
+      # durable-relay.php starts tests/relay-mock.php on an ephemeral loopback port.
       - name: Verify native queue, process death and application integration
         env:
           LATRA_RELAY_TEST_DSN: mysql:host=127.0.0.1;port=3306;dbname=latra_test_relay_app_ci;charset=utf8mb4
@@ -62,3 +67,4 @@ jobs:
           php tests/relay-integration.php
           php tests/relay-runtime.php
           php tests/relay-cli.php
+          php tests/ingestion-native-repositories.php

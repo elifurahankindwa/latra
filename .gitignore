@@ -46,3 +46,8 @@ bruno/**/environments/local.bru
 
 # Isolated temporary-outbox architecture experiment and synthetic results
 /relay-architecture-test/
+
+# Composer and static-analysis artifacts
+/vendor/
+/.phpstan-cache/
+/handoff.md

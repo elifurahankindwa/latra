@@ -1,0 +1,229 @@
+parameters:
+	ignoreErrors:
+		-
+			message: '#^Constant APP_ENV not found\.$#'
+			identifier: constant.notFound
+			count: 1
+			path: api.php
+
+		-
+			message: '#^Constant LATRA_API_URL not found\.$#'
+			identifier: constant.notFound
+			count: 5
+			path: api.php
+
+		-
+			message: '#^Constant LATRA_PASSWORD not found\.$#'
+			identifier: constant.notFound
+			count: 5
+			path: api.php
+
+		-
+			message: '#^Constant LATRA_USERNAME not found\.$#'
+			identifier: constant.notFound
+			count: 5
+			path: api.php
+
+		-
+			message: '#^While loop condition is always true\.$#'
+			identifier: while.alwaysTrue
+			count: 1
+			path: bin/worker.php
+
+		-
+			message: '#^Part \$activities \(non\-empty\-list\<literal\-string&non\-falsy\-string\>\) of encapsed string cannot be cast to string\.$#'
+			identifier: encapsedStringPart.nonString
+			count: 1
+			path: includes/AIAssistant.php
+
+		-
+			message: '#^Static method AIAssistant\:\:appName\(\) is unused\.$#'
+			identifier: method.unused
+			count: 1
+			path: includes/AIAssistant.php
+
+		-
+			message: '#^Static method AIAssistant\:\:appVersion\(\) is unused\.$#'
+			identifier: method.unused
+			count: 1
+			path: includes/AIAssistant.php
+
+		-
+			message: '#^Static method AIAssistant\:\:bullet\(\) is unused\.$#'
+			identifier: method.unused
+			count: 1
+			path: includes/AIAssistant.php
+
+		-
+			message: '#^Dead catch \- Throwable is never thrown in the try block\.$#'
+			identifier: catch.neverThrown
+			count: 1
+			path: includes/AITools.php
+
+		-
+			message: '#^Expression on left side of \?\? is not nullable\.$#'
+			identifier: nullCoalesce.expr
+			count: 1
+			path: includes/AITools.php
+
+		-
+			message: '#^Strict comparison using \!\=\= between mixed and null will always evaluate to true\.$#'
+			identifier: notIdentical.alwaysTrue
+			count: 2
+			path: includes/AITools.php
+
+		-
+			message: '#^Offset ''domain'' on array\{lifetime\: int\<0, max\>, path\: non\-falsy\-string, domain\: string, secure\: bool, httponly\: bool, samesite\: ''Lax''\|''lax''\|''None''\|''none''\|''Strict''\|''strict''\} on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.offset
+			count: 1
+			path: includes/Auth.php
+
+		-
+			message: '#^Comparison operation "\<\=" between int\<400, 407\>\|int\<409, 424\>\|int\<426, 428\>\|int\<430, 499\> and 499 is always true\.$#'
+			identifier: smallerOrEqual.alwaysTrue
+			count: 1
+			path: includes/Automation.php
+
+		-
+			message: '#^Constant DB_CHARSET not found\.$#'
+			identifier: constant.notFound
+			count: 1
+			path: includes/Database.php
+
+		-
+			message: '#^Constant DB_HOST not found\.$#'
+			identifier: constant.notFound
+			count: 1
+			path: includes/Database.php
+
+		-
+			message: '#^Constant DB_NAME not found\.$#'
+			identifier: constant.notFound
+			count: 1
+			path: includes/Database.php
+
+		-
+			message: '#^Constant DB_PASS not found\.$#'
+			identifier: constant.notFound
+			count: 1
+			path: includes/Database.php
+
+		-
+			message: '#^Constant DB_USER not found\.$#'
+			identifier: constant.notFound
+			count: 1
+			path: includes/Database.php
+
+		-
+			message: '#^Property DurableRelay\:\:\$backoff is never read, only written\.$#'
+			identifier: property.onlyWritten
+			count: 1
+			path: includes/DurableRelay.php
+
+		-
+			message: '#^Constant WIALON_BASE_URL not found\.$#'
+			identifier: constant.notFound
+			count: 1
+			path: includes/EventEngine.php
+
+		-
+			message: '#^Constant WIALON_TOKEN not found\.$#'
+			identifier: constant.notFound
+			count: 1
+			path: includes/EventEngine.php
+
+		-
+			message: '#^Offset 2\|3\|4\|5\|6\|7\|8\|9\|10\|11\|12\|13\|14\|15\|16\|17\|18\|19\|20\|21\|22\|23\|24 on array\{1\: ''movement'', 2\: ''engine_on'', 3\: ''engine_off'', 4\: ''speeding'', 5\: ''hard_braking'', 6\: ''hard_turning'', 7\: ''hard_acceleration'', 8\: ''panic_driver'', \.\.\.\} on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.offset
+			count: 1
+			path: includes/EventEngine.php
+
+		-
+			message: '#^Constant WIALON_BASE_URL not found\.$#'
+			identifier: constant.notFound
+			count: 1
+			path: includes/FleetSync.php
+
+		-
+			message: '#^Constant WIALON_TOKEN not found\.$#'
+			identifier: constant.notFound
+			count: 1
+			path: includes/FleetSync.php
+
+		-
+			message: '#^Call to function method_exists\(\) with ''Auth'' and ''canWrite'' will always evaluate to true\.$#'
+			identifier: function.alreadyNarrowedType
+			count: 1
+			path: includes/Layout.php
+
+		-
+			message: '#^Call to function method_exists\(\) with ''Auth'' and ''csrfToken'' will always evaluate to true\.$#'
+			identifier: function.alreadyNarrowedType
+			count: 1
+			path: includes/Layout.php
+
+		-
+			message: '#^Call to function method_exists\(\) with ''Auth'' and ''role'' will always evaluate to true\.$#'
+			identifier: function.alreadyNarrowedType
+			count: 2
+			path: includes/Layout.php
+
+		-
+			message: '#^Call to function method_exists\(\) with ''Auth'' and ''user'' will always evaluate to true\.$#'
+			identifier: function.alreadyNarrowedType
+			count: 1
+			path: includes/Layout.php
+
+		-
+			message: '#^Offset ''vehicle_id'' on array\{page\: string, vehicle_id\: string, vehicle_reg_no\: string\} on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.offset
+			count: 1
+			path: includes/Layout.php
+
+		-
+			message: '#^Offset ''vehicle_reg_no'' on array\{page\: string, vehicle_id\: string, vehicle_reg_no\: string\} on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.offset
+			count: 1
+			path: includes/Layout.php
+
+		-
+			message: '#^Anonymous function with return type void returns null but should not return anything\.$#'
+			identifier: return.void
+			count: 2
+			path: includes/RelayRuntime.php
+
+		-
+			message: '#^Constant WIALON_BASE_URL not found\.$#'
+			identifier: constant.notFound
+			count: 1
+			path: includes/WialonAPI.php
+
+		-
+			message: '#^Constant WIALON_TOKEN not found\.$#'
+			identifier: constant.notFound
+			count: 1
+			path: includes/WialonAPI.php
+
+		-
+			message: '#^Strict comparison using \!\=\= between mixed and null will always evaluate to true\.$#'
+			identifier: notIdentical.alwaysTrue
+			count: 1
+			path: src/Application/Collection/RelayPayloadMapper.php
+
+		-
+			message: '#^Call to function in_array\(\) with arguments 0, array\{5, 7\} and true will always evaluate to false\.$#'
+			identifier: function.impossibleType
+			count: 1
+			path: src/Domain/Ingestion/ActivityDetectionPolicy.php
+
+		-
+			message: '#^Offset ''activity_id'' on null on left side of \?\? does not exist\.$#'
+			identifier: nullCoalesce.offset
+			count: 1
+			path: src/Domain/Ingestion/ActivityDetectionPolicy.php
+
+		-
+			message: '#^Method Latra\\Domain\\Ingestion\\LatraPayloadPolicy\:\:detect2D3D\(\) never returns null so it can be removed from the return type\.$#'
+			identifier: return.unusedType
+			count: 1
+			path: src/Domain/Ingestion/LatraPayloadPolicy.php

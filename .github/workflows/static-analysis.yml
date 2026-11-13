@@ -1,0 +1,25 @@
+name: PHP static analysis
+on:
+  pull_request:
+  push:
+    branches: [main, feat/architecture-hardening]
+permissions:
+  contents: read
+jobs:
+  phpstan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        php: ['8.2', '8.5']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: pdo_mysql, pdo_sqlite, curl, mbstring
+          tools: composer:v2
+          coverage: none
+      - run: composer validate
+      - run: composer install --no-interaction --prefer-dist --no-progress
+      - run: composer analyse

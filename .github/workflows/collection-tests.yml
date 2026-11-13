@@ -2,7 +2,7 @@ name: Offline collection regression tests
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, feat/architecture-hardening]
 permissions:
   contents: read
 jobs:
